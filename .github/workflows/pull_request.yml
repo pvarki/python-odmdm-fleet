@@ -1,0 +1,109 @@
+on:
+  pull_request:
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  # Only the bumpversion half. The library's prek job is checkout + prek-action with no venv, and
+  # the generated python config ends in a local mypy hook that resolves from PATH, so it cannot
+  # run there. Every sibling runs prek itself, after setup-python.
+  general-checks:
+    name: General checks
+    uses: pvarki/config-ci-library/.github/workflows/general-check.yml@main
+    with:
+      run-prek: false
+
+  pre-commit:
+    name: Run pre-commit checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pvarki/config-ci-library/.github/actions/setup-python@main
+        with:
+          python-version: "3.11"
+      - name: Do pre-commit checks
+        run: |
+          uv run prek run --all-files
+
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: write
+    strategy:
+      matrix:
+        python-version: ["3.11"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pvarki/config-ci-library/.github/actions/setup-python@main
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Test with pytest
+        run: |
+          uv run py.test -v --junitxml=pytest.xml
+      - name: Publish Test Report
+        uses: mikepenz/action-junit-report@v4
+        if: success() || failure() # always run even if the previous step fails
+        with:
+          report_paths: "**/pytest*.xml"
+          detailed_summary: true
+          check_name: "JUnit report (local)"
+
+  snyk-test:
+    name: Run Snyk test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pvarki/config-ci-library/.github/actions/setup-python@main
+        with:
+          python-version: "3.11"
+      - uses: pvarki/config-ci-library/.github/actions/snyk-test@main
+        with:
+          snyk-org: deployapp-core-services
+          snyk-token: ${{ secrets.SNYK_TOKEN }}
+
+  docker-build-and-verify:
+    name: Build Docker images
+    runs-on: ubuntu-latest # arc-runner-set
+    steps:
+      # The base images come from Docker Hub, whose anonymous pull limit is shared across all of
+      # GitHub's egress, so an unauthenticated build fails at random.
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: actions/checkout@v6
+      - name: Build test target
+        run: docker build --target test -t odmdm-fleet:test .
+      - name: Build production target
+        run: docker build --target production -t odmdm-fleet:production .
+
+  publish:
+    name: Publish Docker image
+    needs:
+      [
+        "general-checks",
+        "pre-commit",
+        "test",
+        "snyk-test",
+        "docker-build-and-verify",
+      ]
+    runs-on: arc-runner-set
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Publish Docker image
+        uses: pvarki/config-ci-library/.github/actions/publish-image@main
+        with:
+          product: odmdm-fleet
+          component: server
+          dockerhub-username: ${{ vars.DOCKERHUB_USERNAME }}
+          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          acr-repo: ${{ vars.ACR_REPO }}
+          acr-username: ${{ vars.ACR_USERNAME }}
+          acr-token: ${{ secrets.ACR_TOKEN }}
