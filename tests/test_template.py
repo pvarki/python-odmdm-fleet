@@ -99,3 +99,14 @@ def test_annotations_never_reach_the_device(tmp_path: Path) -> None:
     assert template.apps[0].config == {"real": "value", "nested": {"keep": 2}}
     assert template.policy == {"defaultPermissionPolicy": "GRANT"}
     assert template.link_app is not None and template.link_app.title == "Deploy App"
+
+
+def test_the_example_is_a_template_we_accept() -> None:
+    """Operators start from it, so it must never drift out of what load() takes"""
+    example = Path(__file__).resolve().parent.parent / "examples" / "template.json"
+
+    template = load(example, domain="example.fi", key_alias="rmscep")
+
+    assert template.certificate is not None
+    assert template.certificate.name == "rmscep", "the keystore alias comes from the setting"
+    assert not [p for p in ("{domain}", "{mtls_url}", "{key_alias}") if p in json.dumps(template.policy)]
