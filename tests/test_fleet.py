@@ -46,6 +46,8 @@ class _Fleet:
         if path.endswith("/device_mapping"):
             which = int(path.split("/hosts/")[1].split("/")[0])
             found = next(h for h in self.hosts if h["id"] == which)
+            if request.method == "PUT":
+                found["device_mapping"] = [json.loads(request.content)]
             return httpx.Response(200, json={"device_mapping": found.get("device_mapping") or []})
         if "/hosts/" in path and request.method == "GET":
             which = int(path.rsplit("/", 1)[-1])
@@ -339,6 +341,29 @@ def test_a_host_that_already_has_its_certificate_is_not_waiting(monkeypatch: pyt
     fleet = _Fleet()
     fleet.hosts = [_host(3, "verified", named=True)]
     assert _mdm(fleet, monkeypatch).hosts_awaiting_certificate(1, "rmscep") == []
+
+
+def test_the_only_waiting_phone_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Enrol one, name it, enrol the next: phones already named are left alone"""
+    fleet = _Fleet()
+    fleet.hosts = [_host(1, "verified", named=True), _host(2, "failed", named=False)]
+
+    assert _mdm(fleet, monkeypatch).name_the_waiting_host(8, "OTTER2") == 2
+
+    assert fleet.hosts[1]["device_mapping"] == [{"email": "OTTER2", "source": "idp"}]
+    assert fleet.hosts[0]["device_mapping"][0]["email"] == "OTTER1@CODE"
+
+
+@pytest.mark.parametrize(("unnamed", "says"), [(0, "enrol the phone first"), (2, "one at a time")])
+def test_no_phone_is_named_unless_exactly_one_waits(monkeypatch: pytest.MonkeyPatch, unnamed: int, says: str) -> None:
+    """Identical phones are identical rows, and a guess names somebody else's phone"""
+    fleet = _Fleet()
+    fleet.hosts = [_host(1, "verified", named=True)] + [_host(10 + i, "failed", named=False) for i in range(unnamed)]
+
+    with pytest.raises(FleetError, match=says):
+        _mdm(fleet, monkeypatch).name_the_waiting_host(8, "OTTER2")
+
+    assert not [call for call in fleet.calls if call[0] == "PUT"]
 
 
 def _with_cert(authority: str = "RMSCEP") -> MdmTemplate:
