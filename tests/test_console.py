@@ -148,3 +148,18 @@ def test_reconcile_asks_again_for_a_phone_named_late(
     assert result.exit_code == 0, result.output
     assert "Asked again" in result.output
     assert ("POST", "/api/latest/fleet/certificates") in fleet.calls
+
+
+def test_a_new_window_touches_only_the_authority(
+    fleet: _Fleet, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rewritten policy stops apps installing on phones enrolling right now"""
+    _template(tmp_path, monkeypatch)
+
+    result = CliRunner().invoke(cli_group, ["challenge"], input="new-window\n")
+
+    assert result.exit_code == 0, result.output
+    assert "new-window" not in result.output, "asked for without echoing it"
+    assert fleet.authorities[0]["challenge"] == "new-window"
+    changed = {path for method, path in fleet.calls if method != "GET"}
+    assert changed == {"/api/latest/fleet/certificate_authorities/3"}

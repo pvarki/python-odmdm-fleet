@@ -33,9 +33,10 @@ callsign.
    names neither, because Fleet shows identical phones as identical rows and nothing tells you
    which is the one in your hand. Enrol, plan, next phone.
 
-3. Open enrolment in Deploy App (**User management → MDM**) and give Fleet the new challenge::
+3. Open enrolment in Deploy App (**User management → MDM**) and give Fleet the new challenge. It
+   asks for it, and changes nothing else::
 
-       ODMDM_FLEET_CHALLENGE=<challenge from the MDM page> odmdm-fleet apply --team "Deploy App"
+       odmdm-fleet challenge
 
 4. In Fleet, transfer the named phones to the ``Deploy App`` team. Each gets its certificate 7 to
    20 minutes later and greets its callsign in Deploy App.
@@ -50,6 +51,7 @@ Commands
 
     odmdm-fleet apply              # state what devices need; --force-policy after one joins
     odmdm-fleet apply --dry-run    # validate the template without touching Fleet
+    odmdm-fleet challenge          # give Fleet a new enrolment window's challenge, nothing else
     odmdm-fleet plan CALLSIGN      # name the one phone waiting to be named
     odmdm-fleet reconcile          # ask again for phones named after they enrolled; run on a timer
 
@@ -82,7 +84,8 @@ All configuration is via environment variables:
     The deployment's DNS name.
 
 ``ODMDM_FLEET_CHALLENGE``
-    The challenge on Deploy App's MDM page. New for every enrolment window.
+    The challenge on Deploy App's MDM page, for ``challenge`` and a first ``apply``. New for every
+    enrolment window.
 
 ``ODMDM_FLEET_KEY_ALIAS``
     The certificate template's name, which becomes the Android keystore alias. Default ``rmscep``,
