@@ -33,6 +33,8 @@ def cli_group(ctx: click.Context, verbose: int) -> None:
         loglevel = 10
     init_logging(loglevel)
     LOGGER.setLevel(loglevel)
+    # One line per Fleet request buries what the command says; -vv brings them back
+    logging.getLogger("httpx").setLevel(max(loglevel, logging.WARNING) if verbose < 2 else loglevel)
 
 
 def odmdm_fleet_cli() -> None:
