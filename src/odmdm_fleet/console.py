@@ -199,12 +199,18 @@ def challenge(  # pylint: disable=too-many-arguments,too-many-positional-argumen
     default=None,
     help="The team the device waits in (default: ODMDM_FLEET_PREP_TEAM, else ODMDM_FLEET_TEAM)",
 )
-def plan(ctx: click.Context, callsign: str, fleet_url: str | None, team: str | None) -> None:
+@click.option("--instead-of", "old", default=None, help="Rename the device now called this, such as a returning phone")
+def plan(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    ctx: click.Context, callsign: str, fleet_url: str | None, team: str | None, old: str | None
+) -> None:
     """Name the one device waiting to be named
 
     Enrol a phone, run this, then the next phone. With more than one phone waiting nothing is
     named: Fleet shows identical phones as identical rows, so the one in your hand cannot be told
     apart from the others.
+
+    A phone that comes back after a wipe keeps its old name, so it is not waiting. Rename it with
+    --instead-of and the name it had.
     """
     if not CALLSIGN.fullmatch(callsign):
         click.echo("A callsign is 3-32 letters, digits or hyphens, and does not start or end with a hyphen", err=True)
@@ -214,7 +220,11 @@ def plan(ctx: click.Context, callsign: str, fleet_url: str | None, team: str | N
     if not fleet:
         return
     try:
-        host = fleet.name_the_waiting_host(fleet.team_id(team or config.PREP_TEAM or config.TEAM), callsign)
+        team_id = fleet.team_id(team or config.PREP_TEAM or config.TEAM)
+        if old:
+            host = fleet.rename_host(team_id, old, callsign)
+        else:
+            host = fleet.name_the_waiting_host(team_id, callsign)
     except FleetError as exc:
         click.echo(f"Not named: {exc}", err=True)
         ctx.exit(1)

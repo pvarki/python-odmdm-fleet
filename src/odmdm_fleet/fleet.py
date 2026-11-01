@@ -418,6 +418,21 @@ class FleetMdm:
         LOGGER.info("Named host %s %s", waiting[0], callsign)
         return waiting[0]
 
+    def rename_host(self, team: int, old: str, callsign: str) -> int:
+        """Give the host in the team now called `old` a new callsign
+
+        A phone that comes back after a wipe keeps the name it had, so it is not waiting to be
+        named and name_the_waiting_host cannot reach it. Its old name is what tells it apart.
+        Names are compared without case, as the deployment compares callsigns.
+        """
+        hosts = self._call("GET", f"/api/latest/fleet/hosts?team_id={team}&per_page=500").get("hosts") or []
+        called = [int(host["id"]) for host in hosts if self._name_of(int(host["id"])).lower() == old.lower()]
+        if len(called) != 1:
+            raise FleetError(f"{len(called)} devices in team {team} are called {old}, so none was renamed")
+        self._call("PUT", f"/api/latest/fleet/hosts/{called[0]}/device_mapping", {"email": callsign, "source": "idp"})
+        LOGGER.info("Renamed host %s from %s to %s", called[0], old, callsign)
+        return called[0]
+
     # --- the whole statement --------------------------------------------------
 
     def apply(

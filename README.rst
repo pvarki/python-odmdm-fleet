@@ -128,7 +128,8 @@ What Fleet does that you would not guess
 - **A web app's display name is unique within a team** (409). A title in a team's setup experience
   has to be removed there before it can be removed from the team.
 - **A returning phone keeps its old team and its old name.** Transfer it to the preparation team
-  and name it again, or it asks for a name that is already taken.
+  and rename it with ``odmdm-fleet plan NEWNAME --instead-of OLDNAME``, or it asks for a name that
+  is already taken.
 - **Renaming a phone that has its certificate gives it a second callsign.** Revoke the old one in
   Deploy App.
 - **A refusal shows only as** ``SCEP enrollment failed ... failInfo: badMessageCheck`` on the

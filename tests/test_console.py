@@ -49,6 +49,16 @@ def test_plan_names_the_waiting_phone(fleet: _Fleet) -> None:
     assert fleet.hosts[0]["device_mapping"][0]["email"] == "OTTER4"
 
 
+def test_plan_renames_a_returning_phone(fleet: _Fleet) -> None:
+    """Named before the wipe, so the old name is how the operator points at it"""
+    fleet.hosts = [_host(4, "failed", named=True)]
+
+    result = CliRunner().invoke(cli_group, ["plan", "KETTU4", "--instead-of", "OTTER1@CODE"])
+
+    assert result.exit_code == 0, result.output
+    assert fleet.hosts[0]["device_mapping"][0]["email"] == "KETTU4"
+
+
 def test_plan_says_why_it_named_nobody(fleet: _Fleet) -> None:
     """Two phones waiting: the operator learns to enrol them one at a time"""
     fleet.hosts = [_host(4, "failed", named=False), _host(5, "failed", named=False)]

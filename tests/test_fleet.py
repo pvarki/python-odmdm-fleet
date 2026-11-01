@@ -366,6 +366,28 @@ def test_no_phone_is_named_unless_exactly_one_waits(monkeypatch: pytest.MonkeyPa
     assert not [call for call in fleet.calls if call[0] == "PUT"]
 
 
+def test_a_returning_phone_is_renamed_by_its_old_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It kept its name through the wipe, so it is not waiting, and only its old name finds it"""
+    fleet = _Fleet()
+    fleet.hosts = [_host(1, "verified", named=True), _host(2, "failed", named=False)]
+
+    assert _mdm(fleet, monkeypatch).rename_host(8, "otter1@code", "KETTU1") == 1
+
+    assert fleet.hosts[0]["device_mapping"] == [{"email": "KETTU1", "source": "idp"}]
+    assert fleet.hosts[1].get("device_mapping") == []
+
+
+def test_a_name_nobody_has_renames_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A typo in the old name must not land the new one on some other phone"""
+    fleet = _Fleet()
+    fleet.hosts = [_host(1, "verified", named=True)]
+
+    with pytest.raises(FleetError, match="0 devices"):
+        _mdm(fleet, monkeypatch).rename_host(8, "OTTER9", "KETTU1")
+
+    assert not [call for call in fleet.calls if call[0] == "PUT"]
+
+
 def _with_cert(authority: str = "RMSCEP") -> MdmTemplate:
     """A template that asks for a certificate, which is what drags the authority in"""
     return MdmTemplate(
