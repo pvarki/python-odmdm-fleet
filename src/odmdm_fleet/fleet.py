@@ -5,7 +5,6 @@ say which. None of it mentions a product: what to install arrives in the templat
 """
 
 import dataclasses
-import hashlib
 import json
 import logging
 import time
@@ -43,10 +42,6 @@ class FleetMdm:
         self.base_url = base_url.rstrip("/")
         self._token = token
         self.timeout = timeout
-        #: What we last uploaded, so an unchanged policy is not rewritten. Re-pushing on every
-        #: pass is not merely wasteful: a policy rewritten repeatedly never settles long enough
-        #: for Play to finish an install, and the device comes up with nothing on it.
-        self._pushed: dict[str, str] = {}
 
     def _call(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         url = f"{self.base_url}{path}"
@@ -144,14 +139,12 @@ class FleetMdm:
                     LOGGER.info("Waiting for managed Play to publish %s", package)
                     time.sleep(WEB_APP_PUBLISH_WAIT)
         chosen = sorted(ids[p] for p in preinstall if p in ids)
-        digest = hashlib.sha256(repr(chosen).encode()).hexdigest()
-        if chosen and self._pushed.get(f"{team}:setup") != digest:
+        if chosen:
             self._call(
                 "PUT",
                 "/api/latest/fleet/setup_experience/software",
                 {"platform": "android", "team_id": team, "software_title_ids": chosen},
             )
-            self._pushed[f"{team}:setup"] = digest
         return ids
 
     def set_app_config(self, team: int, package: str, config: dict[str, Any]) -> None:
@@ -167,19 +160,17 @@ class FleetMdm:
     def ensure_policy(self, team: int, fragment: dict[str, Any], name: str = POLICY_NAME, force: bool = False) -> None:
         """Android configuration profiles carry raw policy JSON
 
-        There is no update in place, so changing one is delete then upload, and the single
-        profile GET returns metadata only, so there is nothing to compare against -- remember the
-        digest instead. Re-uploading an unchanged profile is not free: a policy rewritten on every
-        pass never settles long enough for Play to finish an install.
+        There is no update in place, so changing one is delete then upload. Re-uploading an
+        unchanged profile is not free: a policy rewritten on every pass never settles long enough
+        for Play to finish an install. So Fleet's own copy is what gets compared, because this
+        runs once per command and has nothing of its own to remember between runs.
 
         force exists because a profile is delivered when the PROFILE changes, not when a host
         arrives, so one created before a device joined is never sent to it.
         """
         profiles = self._call("GET", f"/api/latest/fleet/configuration_profiles?team_id={team}").get("profiles", [])
-        wanted = json.dumps(fragment, indent=2, sort_keys=True).encode("utf-8")
-        digest = hashlib.sha256(wanted).hexdigest()
         here = [p for p in profiles if p.get("name") == name]
-        if here and not force and self._pushed.get(f"{team}:{name}") == digest:
+        if len(here) == 1 and not force and self._policy_in_fleet(here[0]["profile_uuid"]) == fragment:
             return
         for existing in here:
             self._call("DELETE", f"/api/latest/fleet/configuration_profiles/{existing['profile_uuid']}")
@@ -187,11 +178,14 @@ class FleetMdm:
             "/api/latest/fleet/configuration_profiles",
             {"team_id": str(team)},
             f"{name}.json",
-            wanted,
+            json.dumps(fragment, indent=2, sort_keys=True).encode("utf-8"),
             file_field="profile",
         )
-        self._pushed[f"{team}:{name}"] = digest
         LOGGER.info("Uploaded policy %s to team %s", name, team)
+
+    def _policy_in_fleet(self, profile_uuid: str) -> dict[str, Any]:
+        """The policy as Fleet holds it; without alt=media this answers with metadata only"""
+        return self._call("GET", f"/api/latest/fleet/configuration_profiles/{profile_uuid}?alt=media")
 
     def ensure_link_app(self, team: int, title: str, url: str) -> str:
         """A managed web app, so the deployment has an icon on the launcher

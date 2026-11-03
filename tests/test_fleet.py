@@ -152,12 +152,23 @@ class _Fleet:
             return httpx.Response(200, json={"software_title_id": self._next_id})
         if path.endswith("/configuration_profiles"):
             if request.method == "GET":
-                return httpx.Response(200, json={"profiles": list(self.profiles)})
+                return httpx.Response(
+                    200, json={"profiles": [{k: v for k, v in p.items() if k != "raw"} for p in self.profiles]}
+                )
             # An upload the MDM keeps, so a second pass can see it is already there. Without
             # this the adapter is right to upload again: a profile that has gone missing must
             # be restored whatever we remember pushing.
-            self.profiles.append({"name": "rmscep-policy", "profile_uuid": f"uuid-{len(self.profiles)}"})
+            raw = re.search(rb"application/json\r\n\r\n(.*)\r\n--", request.read(), re.DOTALL)
+            assert raw, "the policy must be uploaded as JSON"
+            self.profiles.append(
+                {"name": "rmscep-policy", "profile_uuid": f"uuid-{len(self.profiles)}", "raw": json.loads(raw.group(1))}
+            )
             return httpx.Response(200, json={})
+        if "/configuration_profiles/" in path and request.method == "GET":
+            # Only alt=media answers with the policy; without it Fleet sends metadata.
+            found = next(p for p in self.profiles if p["profile_uuid"] == path.rsplit("/", 1)[-1])
+            media = request.url.params.get("alt") == "media"
+            return httpx.Response(200, json=found["raw"] if media else {"name": found["name"]})
         if "/configuration_profiles/" in path and request.method == "DELETE":
             self.profiles.clear()
             return httpx.Response(200, json={})
@@ -196,15 +207,29 @@ def test_only_the_chosen_apps_install_at_enrolment(monkeypatch: pytest.MonkeyPat
     assert len(result["assigned"]) == 2
 
 
+def _policy_uploads(fleet: _Fleet) -> int:
+    return len([1 for m, p in fleet.calls if m == "POST" and p.endswith("/configuration_profiles")])
+
+
 def test_an_unchanged_policy_is_not_rewritten(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Measured: a policy rewritten every pass never settles and nothing ever installs"""
+    """Measured: a policy rewritten every pass never settles and nothing ever installs
+
+    Each run of the command is a new process, so nothing from the last run can be remembered.
+    """
     fleet = _Fleet()
-    mdm = _mdm(fleet, monkeypatch)
-    mdm.apply("rmscep", TEMPLATE)
-    uploads_after_first = len([1 for m, p in fleet.calls if m == "POST" and p.endswith("/configuration_profiles")])
-    mdm.apply("rmscep", TEMPLATE)
-    uploads_after_second = len([1 for m, p in fleet.calls if m == "POST" and p.endswith("/configuration_profiles")])
-    assert uploads_after_second == uploads_after_first, "the same policy must not be uploaded twice"
+    _mdm(fleet, monkeypatch).apply("rmscep", TEMPLATE)
+    uploads_after_first = _policy_uploads(fleet)
+    _mdm(fleet, monkeypatch).apply("rmscep", TEMPLATE)
+    assert _policy_uploads(fleet) == uploads_after_first, "the same policy must not be uploaded twice"
+
+
+def test_a_changed_policy_replaces_the_old_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Otherwise an edited template would look applied and change nothing on a phone"""
+    fleet = _Fleet()
+    _mdm(fleet, monkeypatch).apply("rmscep", TEMPLATE)
+    changed = MdmTemplate(apps=TEMPLATE.apps, policy={"defaultPermissionPolicy": "PROMPT"})
+    _mdm(fleet, monkeypatch).apply("rmscep", changed)
+    assert [p["raw"] for p in fleet.profiles] == [changed.policy]
 
 
 def test_force_reaches_a_host_that_just_joined(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -212,10 +237,9 @@ def test_force_reaches_a_host_that_just_joined(monkeypatch: pytest.MonkeyPatch) 
     fleet = _Fleet()
     mdm = _mdm(fleet, monkeypatch)
     mdm.apply("rmscep", TEMPLATE)
-    before = len([1 for m, p in fleet.calls if m == "POST" and p.endswith("/configuration_profiles")])
+    before = _policy_uploads(fleet)
     mdm.apply("rmscep", TEMPLATE, force_policy=True)
-    after = len([1 for m, p in fleet.calls if m == "POST" and p.endswith("/configuration_profiles")])
-    assert after == before + 1
+    assert _policy_uploads(fleet) == before + 1
 
 
 def test_a_refusal_is_reported_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:

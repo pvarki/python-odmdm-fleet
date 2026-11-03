@@ -105,9 +105,9 @@ def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
 ) -> None:
     """Tell Fleet what this deployment's devices need
 
-    Run it when a deployment is set up and whenever its template changes. It rewrites the policy,
-    which stops apps installing on phones that are enrolling at that moment, so a new enrolment
-    window is `challenge`, not this.
+    Run it when a deployment is set up and whenever its template changes. A changed policy stops
+    apps installing on phones that are enrolling at that moment, so a new enrolment window is
+    `challenge`, not this.
 
     Order matters and is handled for you. Apps install at ENROLMENT and at no other time, so a
     device that has already joined will not pick up a template applied afterwards -- it has to
