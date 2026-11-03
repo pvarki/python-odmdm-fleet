@@ -331,6 +331,10 @@ class FleetMdm:
         There is no update in place, so a changed subject is delete then create. The name is kept
         because it becomes the Android keystore alias, and a device already holding a key under one
         alias will not accept a second.
+
+        Refused while the team has devices. Replacing the template makes each of them delete the
+        certificate it has and ask again, and the deployment refuses a name that is already taken,
+        so all of them would lose access (measured on Fleet 4.90).
         """
         authorities = self._call("GET", "/api/latest/fleet/certificate_authorities").get("certificate_authorities", [])
         match = [a for a in authorities if a.get("name") == authority]
@@ -348,6 +352,13 @@ class FleetMdm:
                 and int(template.get("certificate_authority_id", 0)) == authority_id
             ):
                 return int(template["id"])
+            devices = len(self._hosts(team))
+            if devices:
+                raise FleetError(
+                    f"replacing certificate template {name} would delete the certificate of {devices} devices in "
+                    f"team {team}, and their names would be refused when they ask again, so nothing was changed. "
+                    "Use a new team, or empty this one first."
+                )
             self._call("DELETE", f"/api/latest/fleet/certificates/{template['id']}?team_id={team}")
             LOGGER.info("Replacing certificate template %s", name)
 
@@ -360,6 +371,10 @@ class FleetMdm:
         return int(created["id"])
 
     # --- naming ---------------------------------------------------------------
+
+    def _hosts(self, team: int) -> list[dict[str, Any]]:
+        """The devices in a team"""
+        return self._call("GET", f"/api/latest/fleet/hosts?team_id={team}&per_page=500").get("hosts") or []
 
     def _name_of(self, host_id: int) -> str:
         """The name a host was given, or empty if nobody has named it"""
@@ -374,8 +389,7 @@ class FleetMdm:
         two waiting nobody can tell which is the phone in hand, and guessing puts the callsign on
         somebody else's phone, so that is refused rather than picked.
         """
-        hosts = self._call("GET", f"/api/latest/fleet/hosts?team_id={team}&per_page=500").get("hosts") or []
-        waiting = [int(host["id"]) for host in hosts if not self._name_of(int(host["id"]))]
+        waiting = [int(host["id"]) for host in self._hosts(team) if not self._name_of(int(host["id"]))]
         if not waiting:
             raise FleetError(f"no device in team {team} is waiting for a name: enrol the phone first")
         if len(waiting) > 1:

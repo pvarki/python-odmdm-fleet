@@ -315,6 +315,39 @@ def test_an_unchanged_certificate_template_is_left_alone(monkeypatch: pytest.Mon
     assert after == before, "an unchanged template must not be recreated"
 
 
+def test_a_changed_template_on_a_team_without_devices_is_replaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """There is no update in place, and the name has to survive as the keystore alias"""
+    fleet = _Fleet()
+    _mdm(fleet, monkeypatch).apply("rmscep", _with_cert())
+    changed = MdmTemplate(
+        apps=TEMPLATE.apps,
+        policy=TEMPLATE.policy,
+        certificate=Certificate(name="rmscep", subject="CN=$OTHER", authority="RMSCEP"),
+    )
+    _mdm(fleet, monkeypatch).apply("rmscep", changed)
+
+    assert [(c["name"], c["subject_name"]) for c in fleet.certificates] == [("rmscep", "CN=$OTHER")]
+
+
+def test_a_changed_template_on_a_team_with_devices_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Measured: every device deletes its certificate, asks again, and is refused its own name"""
+    fleet = _Fleet()
+    _mdm(fleet, monkeypatch).apply("rmscep", _with_cert())
+    fleet.hosts = [_host(1, "verified", named=True)]
+    fleet.calls.clear()
+    changed = MdmTemplate(
+        apps=TEMPLATE.apps,
+        policy=TEMPLATE.policy,
+        certificate=Certificate(name="rmscep", subject="CN=$OTHER", authority="RMSCEP"),
+    )
+
+    with pytest.raises(FleetError, match="1 devices in team 7"):
+        _mdm(fleet, monkeypatch).apply("rmscep", changed)
+
+    assert not [call for call in fleet.calls if call[0] == "DELETE"]
+    assert fleet.certificates[0]["subject_name"] == "CN=$VAR,OU=$OTHER"
+
+
 def _host(host_id: int, status: str, named: bool) -> dict[str, Any]:
     return {
         "id": host_id,
