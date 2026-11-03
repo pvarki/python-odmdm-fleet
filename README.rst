@@ -127,7 +127,8 @@ What Fleet does that you would not guess
   has to be removed there before it can be removed from the team.
 - **A returning phone keeps its old team and its old name.** Transfer it to the preparation team
   and rename it with ``odmdm-fleet plan NEWNAME --instead-of OLDNAME``, or it asks for a name that
-  is already taken.
+  is already taken. It can also come back as a new device with no name, so ``--instead-of`` refuses
+  while one is waiting: name that one with plain ``plan``.
 - **Renaming a phone that has its certificate gives it a second callsign.** Revoke the old one in
   Deploy App.
 - **Replacing a team's certificate template locks its phones out.** Every phone deletes the
