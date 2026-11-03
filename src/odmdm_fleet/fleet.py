@@ -325,17 +325,12 @@ class FleetMdm:
         body = created.get("certificate_authority") or created
         return int(body["id"])
 
-    def ensure_certificate(self, team: int, name: str, subject: str, authority: str, force: bool = False) -> int:
+    def ensure_certificate(self, team: int, name: str, subject: str, authority: str) -> int:
         """The template the MDM fills in per device, and asks us to sign
 
         There is no update in place, so a changed subject is delete then create. The name is kept
         because it becomes the Android keystore alias, and a device already holding a key under one
         alias will not accept a second.
-
-        force exists because the subject is filled in when a device ENROLS, and a device enrols
-        before anyone has named it -- the host does not exist to be named until then. That first
-        attempt fails, and Fleet never retries a failed certificate on its own. Recreating the
-        template is what asks again, so it is how a named host finally gets its certificate.
         """
         authorities = self._call("GET", "/api/latest/fleet/certificate_authorities").get("certificate_authorities", [])
         match = [a for a in authorities if a.get("name") == authority]
@@ -349,13 +344,12 @@ class FleetMdm:
             if template.get("name") != name:
                 continue
             if (
-                not force
-                and template.get("subject_name") == subject
+                template.get("subject_name") == subject
                 and int(template.get("certificate_authority_id", 0)) == authority_id
             ):
                 return int(template["id"])
             self._call("DELETE", f"/api/latest/fleet/certificates/{template['id']}?team_id={team}")
-            LOGGER.info("Replacing certificate template %s, so it is asked for again", name)
+            LOGGER.info("Replacing certificate template %s", name)
 
         created = self._call(
             "POST",
@@ -364,28 +358,6 @@ class FleetMdm:
         )
         LOGGER.info("Certificate template %s asks for %s", name, subject)
         return int(created["id"])
-
-    def hosts_awaiting_certificate(self, team: int, name: str) -> list[int]:
-        """Hosts that were named after they enrolled, and so have no certificate
-
-        The subject is filled in when a device ENROLS, and a device enrols before anyone has named
-        it -- there is no host to name until it does. That first attempt fails, and nothing retries
-        it. These are the hosts for which asking again would now work: named, and still refused.
-
-        Asking again is not free, because it re-asks every device in the group, so this exists to
-        keep that to the occasions when it would change something.
-        """
-        hosts = self._call("GET", f"/api/latest/fleet/hosts?team_id={team}&per_page=500").get("hosts") or []
-        waiting = []
-        for host in hosts:
-            host_id = int(host["id"])
-            detail = self._call("GET", f"/api/latest/fleet/hosts/{host_id}").get("host") or {}
-            profiles = (detail.get("mdm") or {}).get("profiles") or []
-            if not any(p.get("name") == name and p.get("status") == "failed" for p in profiles):
-                continue
-            if self._name_of(host_id):
-                waiting.append(host_id)
-        return waiting
 
     # --- naming ---------------------------------------------------------------
 
@@ -434,7 +406,6 @@ class FleetMdm:
         team_name: str,
         template: MdmTemplate,
         force_policy: bool = False,
-        force_certificate: bool = False,
         scep_url: str = "",
         challenge: str = "",
         link_package: str = "",
@@ -461,7 +432,6 @@ class FleetMdm:
                 template.certificate.name,
                 template.certificate.subject,
                 template.certificate.authority,
-                force=force_certificate,
             )
         self.ensure_policy(team, template.policy, force=force_policy)
 

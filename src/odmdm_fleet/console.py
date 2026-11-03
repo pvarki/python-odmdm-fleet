@@ -86,11 +86,6 @@ def _template(ctx: click.Context, path: str | None, domain: str | None) -> templ
 @click.option(
     "--force-policy", is_flag=True, help="Re-upload the policy even if unchanged, to reach a host that just joined"
 )
-@click.option(
-    "--force-certificate",
-    is_flag=True,
-    help="Ask again for the certificate of a host that was named after it enrolled",
-)
 @click.option("--dry-run", is_flag=True, help="Read and validate the template, then stop")
 def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     ctx: click.Context,
@@ -100,7 +95,6 @@ def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     prep_team: str | None,
     domain: str | None,
     force_policy: bool,
-    force_certificate: bool,
     dry_run: bool,
 ) -> None:
     """Tell Fleet what this deployment's devices need
@@ -134,7 +128,6 @@ def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
             team or config.TEAM,
             wanted,
             force_policy=force_policy,
-            force_certificate=force_certificate,
             scep_url=f"https://{domain or config.DOMAIN}/scep",
             challenge=config.CHALLENGE,
         )
@@ -232,52 +225,4 @@ def plan(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         ctx.exit(1)
         return
     click.echo(f"Host {host} is {callsign}")
-    ctx.exit(0)
-
-
-@cli_group.command(name="reconcile")
-@click.pass_context
-@click.option("--template", "path", default=None, help="What to install (default: ODMDM_FLEET_TEMPLATE)")
-@click.option("--fleet-url", default=None, help="Base URL of Fleet's API (default: ODMDM_FLEET_URL)")
-@click.option("--team", default=None, help="The team devices get the certificate in (default: ODMDM_FLEET_TEAM)")
-@click.option("--domain", default=None, help="The deployment's DNS name (default: ODMDM_FLEET_DOMAIN)")
-def reconcile(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    ctx: click.Context,
-    path: str | None,
-    fleet_url: str | None,
-    team: str | None,
-    domain: str | None,
-) -> None:
-    """Give a certificate to any device that was named after it enrolled
-
-    Run this on a timer. A device enrolled straight into the certificate team asks before anyone
-    has named it, so that first attempt fails, and Fleet stops retrying after three.
-
-    It only asks again when asking would change something: re-asking reaches every device in the
-    team, and a template rewritten for nothing is rewritten while somebody else is still installing.
-    """
-    wanted = _template(ctx, path, domain)
-    if not wanted:
-        return
-    if not wanted.certificate:
-        click.echo("The template states no certificate, so there is nothing to reconcile")
-        ctx.exit(0)
-        return
-    fleet = _fleet(ctx, fleet_url)
-    if not fleet:
-        return
-    the_team = team or config.TEAM
-    try:
-        waiting = fleet.hosts_awaiting_certificate(fleet.team_id(the_team), wanted.certificate.name)
-        if not waiting:
-            click.echo("Nothing waiting")
-            ctx.exit(0)
-            return
-        click.echo(f"{len(waiting)} device(s) named after enrolment and still without a certificate: {waiting}")
-        fleet.apply(the_team, wanted, force_certificate=True)
-    except FleetError as exc:
-        click.echo(f"Fleet refused: {exc}", err=True)
-        ctx.exit(1)
-        return
-    click.echo("Asked again")
     ctx.exit(0)

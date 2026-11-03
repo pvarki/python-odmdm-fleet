@@ -79,12 +79,12 @@ def test_plan_needs_somewhere_to_send_it(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "ODMDM_FLEET_URL" in result.output
 
 
-@pytest.mark.parametrize("command", ["apply", "reconcile"])
-def test_a_template_and_domain_are_required(command: str, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("command", [["apply"], ["challenge", "--challenge", "new-window"]])
+def test_a_template_and_domain_are_required(command: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
     """Without them there is nothing to state to Fleet"""
     monkeypatch.setattr(config, "TEMPLATE", None)
 
-    result = CliRunner().invoke(cli_group, [command])
+    result = CliRunner().invoke(cli_group, command)
 
     assert result.exit_code == 1
     assert "ODMDM_FLEET_TEMPLATE" in result.output
@@ -130,34 +130,6 @@ def test_a_dry_run_never_reaches_fleet(fleet: _Fleet, tmp_path: Path, monkeypatc
 
     assert result.exit_code == 0, result.output
     assert not fleet.calls
-
-
-def test_reconcile_leaves_fleet_alone_when_nobody_waits(
-    fleet: _Fleet, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Re-asking reaches every phone in the team, so it happens only when it changes something"""
-    _template(tmp_path, monkeypatch)
-    fleet.hosts = [_host(4, "verified", named=True)]
-
-    result = CliRunner().invoke(cli_group, ["reconcile", "--team", "rmscep"])
-
-    assert result.exit_code == 0, result.output
-    assert "Nothing waiting" in result.output
-    assert not [call for call in fleet.calls if call[0] != "GET"]
-
-
-def test_reconcile_asks_again_for_a_phone_named_late(
-    fleet: _Fleet, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Named after its first request failed: recreating the template is what asks again"""
-    _template(tmp_path, monkeypatch)
-    fleet.hosts = [_host(4, "failed", named=True)]
-
-    result = CliRunner().invoke(cli_group, ["reconcile", "--team", "rmscep"])
-
-    assert result.exit_code == 0, result.output
-    assert "Asked again" in result.output
-    assert ("POST", "/api/latest/fleet/certificates") in fleet.calls
 
 
 def test_a_new_window_touches_only_the_authority(

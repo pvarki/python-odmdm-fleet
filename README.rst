@@ -53,11 +53,9 @@ Commands
     odmdm-fleet apply --dry-run    # validate the template without touching Fleet
     odmdm-fleet challenge          # give Fleet a new enrolment window's challenge, nothing else
     odmdm-fleet plan CALLSIGN      # name the one phone waiting to be named
-    odmdm-fleet reconcile          # ask again for phones named after they enrolled; run on a timer
 
-``reconcile`` is for a single-team setup, where a phone enrols straight into the certificate team
-before anyone has named it. That first request fails, Fleet gives up after three, and
-``reconcile`` asks again once the phone has a name.
+With a single team a phone enrols straight into the certificate team before anyone has named it,
+and that first request fails. Name it with ``plan --team``, then transfer it out and back.
 
 Configuration
 -------------
@@ -132,6 +130,10 @@ What Fleet does that you would not guess
   is already taken.
 - **Renaming a phone that has its certificate gives it a second callsign.** Revoke the old one in
   Deploy App.
+- **Replacing a team's certificate template locks its phones out.** Every phone deletes the
+  certificate it has and asks again, and the deployment refuses a name that is already taken. So
+  this repository never replaces one to retry a phone: a transfer out and back asks for that phone
+  alone.
 - **A refusal shows only as** ``SCEP enrollment failed ... failInfo: badMessageCheck`` on the
   phone's certificate. Usually a bad or taken name, or Fleet still has the previous window's
   challenge. Fix it, then transfer the phone out and back.

@@ -315,56 +315,12 @@ def test_an_unchanged_certificate_template_is_left_alone(monkeypatch: pytest.Mon
     assert after == before, "an unchanged template must not be recreated"
 
 
-def test_forcing_the_certificate_asks_again(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The ordinary recovery: a device enrols before anyone can name it, so the first ask fails
-
-    Fleet never retries a failed certificate, and the template is what asks. Recreating it is the
-    only way a host named after it enrolled ever gets one.
-    """
-    fleet = _Fleet()
-    with_cert = MdmTemplate(
-        apps=TEMPLATE.apps,
-        policy=TEMPLATE.policy,
-        certificate=Certificate(name="rmscep", subject="CN=$VAR,OU=$OTHER", authority="RMSCEP"),
-    )
-    mdm = _mdm(fleet, monkeypatch)
-    mdm.apply("rmscep", with_cert)
-    fleet.calls.clear()
-    mdm.apply("rmscep", with_cert, force_certificate=True)
-
-    assert any(method == "DELETE" and "/certificates/" in path for method, path in fleet.calls)
-    assert any(method == "POST" and path.endswith("/certificates") for method, path in fleet.calls)
-    assert len(fleet.certificates) == 1, "the template is replaced, not duplicated"
-    assert fleet.certificates[0]["name"] == "rmscep", "the keystore alias has to stay the same"
-
-
 def _host(host_id: int, status: str, named: bool) -> dict[str, Any]:
     return {
         "id": host_id,
         "profiles": [{"name": "rmscep", "status": status}],
         "device_mapping": [{"email": "OTTER1@CODE", "source": "mdm_idp_accounts"}] if named else [],
     }
-
-
-def test_a_host_named_after_enrolment_is_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Named, and still refused: asking again would now work"""
-    fleet = _Fleet()
-    fleet.hosts = [_host(1, "failed", named=True)]
-    assert _mdm(fleet, monkeypatch).hosts_awaiting_certificate(1, "rmscep") == [1]
-
-
-def test_a_host_nobody_has_named_is_not_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Asking again changes nothing until somebody names it, and re-asking is not free"""
-    fleet = _Fleet()
-    fleet.hosts = [_host(2, "failed", named=False)]
-    assert _mdm(fleet, monkeypatch).hosts_awaiting_certificate(1, "rmscep") == []
-
-
-def test_a_host_that_already_has_its_certificate_is_not_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Otherwise every pass would re-ask the whole group forever"""
-    fleet = _Fleet()
-    fleet.hosts = [_host(3, "verified", named=True)]
-    assert _mdm(fleet, monkeypatch).hosts_awaiting_certificate(1, "rmscep") == []
 
 
 def test_the_only_waiting_phone_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
