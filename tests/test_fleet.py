@@ -51,8 +51,7 @@ class _Fleet:
             return httpx.Response(200, json={"device_mapping": found.get("device_mapping") or []})
         if "/hosts/" in path and request.method == "GET":
             which = int(path.rsplit("/", 1)[-1])
-            found = next(h for h in self.hosts if h["id"] == which)
-            return httpx.Response(200, json={"host": {"mdm": {"profiles": found.get("profiles") or []}}})
+            return httpx.Response(200, json={"host": next(h for h in self.hosts if h["id"] == which)})
         if path.endswith("/certificate_authorities") and request.method == "GET":
             # Fleet's listing omits the url; only the detail carries it. Mirrored so a check
             # that reads the url off the listing fails here too.
@@ -333,7 +332,7 @@ def test_a_changed_template_on_a_team_with_devices_is_refused(monkeypatch: pytes
     """Measured: every device deletes its certificate, asks again, and is refused its own name"""
     fleet = _Fleet()
     _mdm(fleet, monkeypatch).apply("rmscep", _with_cert())
-    fleet.hosts = [_host(1, "verified", named=True)]
+    fleet.hosts = [_host(1, "verified", "OTTER1")]
     fleet.calls.clear()
     changed = MdmTemplate(
         apps=TEMPLATE.apps,
@@ -348,11 +347,33 @@ def test_a_changed_template_on_a_team_with_devices_is_refused(monkeypatch: pytes
     assert fleet.certificates[0]["subject_name"] == "CN=$VAR,OU=$OTHER"
 
 
-def _host(host_id: int, status: str, named: bool) -> dict[str, Any]:
+def _host(
+    host_id: int, status: str = "", name: str = "", detail: str = "", enrolled: str = "2026-11-01T19:38:12Z"
+) -> dict[str, Any]:
+    """A phone as Fleet's host detail shows it, its certificate row left out when there is no status
+
+    The policy's row is there too, so that only the certificate's row is read as the certificate.
+    """
+    rows: list[dict[str, Any]] = [
+        {"profile_uuid": "g4bb", "name": "rmscep-policy", "status": "verified", "operation_type": "install"}
+    ]
+    if status:
+        rows.append(
+            {
+                "profile_uuid": "fleet-host-certificate-template",
+                "name": "rmscep",
+                "status": status,
+                "operation_type": "install",
+                "detail": detail,
+                "certificate_template_id": 81,
+            }
+        )
     return {
         "id": host_id,
-        "profiles": [{"name": "rmscep", "status": status}],
-        "device_mapping": [{"email": "OTTER1@CODE", "source": "mdm_idp_accounts"}] if named else [],
+        "hardware_model": "Google sdk_gphone64_arm64",
+        "last_enrolled_at": enrolled,
+        "end_users": [{"idp_username": name, "idp_info_updated_at": None}] if name else [],
+        "mdm": {"profiles": rows},
     }
 
 

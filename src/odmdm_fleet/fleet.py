@@ -4,6 +4,7 @@ Every request shape and every wait in here was measured against a live Fleet, an
 say which. None of it mentions a product: what to install arrives in the template.
 """
 
+import dataclasses
 import json
 import logging
 import time
@@ -32,6 +33,49 @@ MAX_WEB_APP_TITLE = 29
 #: Named after the responder this was first applied from, and kept: Fleet knows a profile by its
 #: name, so a new name would sit next to the old profile on every team instead of replacing it.
 POLICY_NAME = "rmscep-policy"
+
+
+@dataclasses.dataclass(frozen=True)
+class Phone:
+    """A device in the team, and how far its certificate has got"""
+
+    id: int
+    #: What the certificate's common name becomes: the name Fleet holds up to any "@". Empty while
+    #: nobody has named the phone.
+    callsign: str
+    model: str
+    enrolled: str
+    #: The certificate row's status and Fleet's detail on it. No status: nothing was asked for.
+    status: str
+    detail: str
+
+    @property
+    def state(self) -> str:
+        """Where the certificate is, in words an operator can act on
+
+        The details matched are the ones seen on a live Fleet 4.90.1. A phone acts on a request at
+        its next check-in, every 15 minutes. After a failure a phone reports, Fleet asks again by
+        itself up to three times, and that request keeps the failure's detail while it waits.
+        """
+        if not self.status:
+            return "no certificate requested"
+        if self.status == "verified":
+            return "has its certificate"
+        if self.status == "failed":
+            return self._failure
+        waiting = "requested, waiting for the phone (up to 15 minutes)"
+        return f"{waiting}; last time: {self._failure}" if self.detail else waiting
+
+    @property
+    def _failure(self) -> str:
+        """What Fleet's detail on a failed request means"""
+        if "does not have an IDP user" in self.detail:
+            return "waiting for a name"
+        if "SCEP enrollment failed" in self.detail:
+            return "refused by Deploy App: name taken or not allowed, enrolment closed, or Fleet has an old challenge"
+        if "Network error" in self.detail:
+            return "could not reach Deploy App"
+        return self.detail or "failed"
 
 
 class FleetMdm:
@@ -374,6 +418,33 @@ class FleetMdm:
     def _hosts(self, team: int) -> list[dict[str, Any]]:
         """The devices in a team"""
         return self._call("GET", f"/api/latest/fleet/hosts?team_id={team}&per_page=500").get("hosts") or []
+
+    def phones(self, team: int, certificate: str) -> list[Phone]:
+        """The team's devices in enrolment order, each with its name and its certificate row
+
+        The row is the install of the certificate template called `certificate`. A host can show
+        an old remove row of the same name beside the new one for a while, and that one is history.
+        """
+        found = []
+        for listed in self._hosts(team):
+            host = self._call("GET", f"/api/latest/fleet/hosts/{listed['id']}").get("host") or {}
+            users = host.get("end_users") or []
+            name = next((str(user["idp_username"]) for user in users if user.get("idp_username")), "")
+            rows = (host.get("mdm") or {}).get("profiles") or []
+            row: dict[str, Any] = next(
+                (r for r in rows if r.get("name") == certificate and r.get("operation_type") == "install"), {}
+            )
+            found.append(
+                Phone(
+                    id=int(listed["id"]),
+                    callsign=name.split("@")[0],
+                    model=str(host.get("hardware_model") or ""),
+                    enrolled=str(host.get("last_enrolled_at") or ""),
+                    status=str(row.get("status") or ""),
+                    detail=str(row.get("detail") or ""),
+                )
+            )
+        return sorted(found, key=lambda phone: (phone.enrolled, phone.id))
 
     # --- the whole statement --------------------------------------------------
 

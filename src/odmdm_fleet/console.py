@@ -173,3 +173,28 @@ def challenge(  # pylint: disable=too-many-arguments,too-many-positional-argumen
     click.echo(f"{wanted.certificate.authority} has the new challenge")
     ctx.exit(0)
 
+
+@cli_group.command(name="phones")
+@click.pass_context
+@click.option("--fleet-url", default=None, help="Base URL of Fleet's API (default: ODMDM_FLEET_URL)")
+@click.option("--team", default=None, help="The team the phones are in (default: ODMDM_FLEET_TEAM)")
+def phones(ctx: click.Context, fleet_url: str | None, team: str | None) -> None:
+    """List the team's phones and where each one's certificate is
+
+    One line each: the host id that name and resend take, the callsign, the model, the day it
+    enrolled, and the certificate in plain words.
+    """
+    fleet = _fleet(ctx, fleet_url)
+    if not fleet:
+        return
+    try:
+        found = fleet.phones(fleet.team_id(team or config.TEAM), config.KEY_ALIAS)
+    except FleetError as exc:
+        click.echo(f"Fleet refused: {exc}", err=True)
+        ctx.exit(1)
+        return
+    for phone in found:
+        click.echo(f"{phone.id:<5} {phone.callsign or '-':<12} {phone.model:<26} {phone.enrolled[:10]}  {phone.state}")
+    if not found:
+        click.echo("No phones in the team")
+    ctx.exit(0)
