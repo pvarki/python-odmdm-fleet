@@ -319,3 +319,48 @@ def name(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         ctx.exit(1)
         return
     ctx.exit(0)
+
+
+@cli_group.command(name="resend")
+@click.pass_context
+@click.argument("hosts", nargs=-1, type=int)
+@click.option("--fleet-url", default=None, help="Base URL of Fleet's API (default: ODMDM_FLEET_URL)")
+@click.option("--team", default=None, help="The team the phones are in (default: ODMDM_FLEET_TEAM)")
+def resend(ctx: click.Context, hosts: tuple[int, ...], fleet_url: str | None, team: str | None) -> None:
+    """Have Fleet send phones their certificate requests again
+
+    For a refused phone once the cause is fixed, such as enrolment opened again and its new
+    challenge given to Fleet. A taken name is not one of those: Deploy App never frees a name, so
+    give the phone another with name, which sends the request itself. Without host ids, every phone
+    that has a name and whose certificate failed. Each acts on it at its next check-in, within
+    about 15 minutes.
+
+    A host id is asked whatever its state. A phone that has its certificate asks again under the
+    name it holds and is refused, and reads as refused from then on though that certificate still
+    works.
+    """
+    fleet = _fleet(ctx, fleet_url)
+    if not fleet:
+        return
+    try:
+        team_id = fleet.team_id(team or config.TEAM)
+        found = {phone.id: phone for phone in fleet.phones(team_id, config.KEY_ALIAS)}
+        unknown = [host for host in hosts if host not in found]
+        if unknown:
+            click.echo(f"Nothing sent: host {unknown[0]} is not in the team", err=True)
+            ctx.exit(1)
+            return
+        chosen = list(hosts) or [phone.id for phone in found.values() if phone.status == "failed" and phone.callsign]
+        if not chosen:
+            click.echo("Nothing to resend")
+            ctx.exit(0)
+            return
+        template = fleet.certificate_template(team_id, config.KEY_ALIAS)
+        for host in chosen:
+            fleet.resend(host, template)
+            click.echo(f"Host {host} ({found[host].callsign or 'no name'}): certificate asked for again")
+    except FleetError as exc:
+        click.echo(f"Fleet refused: {exc}", err=True)
+        ctx.exit(1)
+        return
+    ctx.exit(0)

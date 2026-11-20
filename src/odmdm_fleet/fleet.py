@@ -70,6 +70,9 @@ class Phone:
     def _failure(self) -> str:
         """What Fleet's detail on a failed request means"""
         if "does not have an IDP user" in self.detail:
+            # Naming does not send the request again, so a name beside this detail was given without a resend
+            if self.callsign:
+                return "named, but its certificate was not asked for again: run resend"
             return "waiting for a name"
         if "SCEP enrollment failed" in self.detail:
             return "refused by Deploy App: name taken or not allowed, enrolment closed, or Fleet has an old challenge"

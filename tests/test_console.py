@@ -117,7 +117,7 @@ UNREACHED = "Network error during SCEP enrollment: Failed to communicate with SC
     ("status", "detail", "says"),
     [
         ("", "", "no certificate requested"),
-        ("failed", NO_NAME, "waiting for a name"),
+        ("failed", NO_NAME, "named, but its certificate was not asked for again: run resend"),
         ("pending", "", "requested, waiting for the phone (up to 15 minutes)"),
         ("delivering", "", "requested, waiting for the phone (up to 15 minutes)"),
         ("delivered", "", "requested, waiting for the phone (up to 15 minutes)"),
@@ -348,4 +348,50 @@ def test_name_without_a_certificate_template_says_so(fleet: _Fleet) -> None:
 
     assert result.exit_code == 1
     assert "no certificate template named rmscep: run apply first" in result.output
+    assert not _changes(fleet)
+
+
+def test_resend_asks_again_for_every_named_phone_that_failed(fleet: _Fleet) -> None:
+    """A phone named in Fleet by hand is one of them: naming alone does not send the request again"""
+    fleet.hosts = [
+        _host(31, "failed", "OTTER4", REFUSED),
+        _host(32, "failed", detail=NO_NAME),
+        _host(33, "verified", "OTTER5"),
+        _host(34, "failed", "OTTER6", NO_NAME),
+        _host(35, "pending", "OTTER7"),
+    ]
+
+    result = CliRunner().invoke(cli_group, ["resend"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == [
+        "Host 31 (OTTER4): certificate asked for again",
+        "Host 34 (OTTER6): certificate asked for again",
+    ]
+    assert _changes(fleet) == [
+        ("POST", "/hosts/31/certificates/81/resend"),
+        ("POST", "/hosts/34/certificates/81/resend"),
+    ]
+
+
+def test_resend_given_hosts_asks_for_those(fleet: _Fleet) -> None:
+    """Whatever state they are in: the operator chose them"""
+    fleet.hosts = [_host(31, "failed", "OTTER4", REFUSED), _host(32, "failed", detail=NO_NAME)]
+
+    result = CliRunner().invoke(cli_group, ["resend", "32"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == ["Host 32 (no name): certificate asked for again"]
+    assert _changes(fleet) == [("POST", "/hosts/32/certificates/81/resend")]
+
+
+@pytest.mark.parametrize(("arguments", "says", "code"), [([], "Nothing to resend", 0), (["99"], "not in the team", 1)])
+def test_resend_says_when_it_sends_nothing(fleet: _Fleet, arguments: list[str], says: str, code: int) -> None:
+    """Nobody failed, or a host that is not in the team: said, and nothing sent"""
+    fleet.hosts = [_host(31, "verified", "OTTER4")]
+
+    result = CliRunner().invoke(cli_group, ["resend", *arguments])
+
+    assert result.exit_code == code, result.output
+    assert says in result.output
     assert not _changes(fleet)
