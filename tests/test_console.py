@@ -7,6 +7,7 @@ to say why, rather than end in a traceback.
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 from click.testing import CliRunner
 
@@ -18,7 +19,10 @@ from .test_fleet import _Fleet, _host, _mdm
 
 @pytest.fixture
 def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Fleet:
-    """A configured connector talking to a stubbed Fleet whose team "rmscep" has its certificate template"""
+    """A configured connector talking to a stubbed Fleet whose team "rmscep" has its certificate template
+
+    And its policy, last sent after the time _host gives a phone by default.
+    """
     token = tmp_path / "token"
     token.write_text("token\n", encoding="utf-8")
     monkeypatch.setattr(config, "URL", "https://mdm.test")
@@ -26,6 +30,15 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Fleet:
     monkeypatch.setattr(config, "TEAM", "rmscep")
     stub = _Fleet()
     stub.certificates = [{"id": 81, "name": "rmscep", "subject_name": "CN=$VAR", "certificate_authority_id": 3}]
+    stub.profiles = [
+        {
+            "name": "rmscep-policy",
+            "profile_uuid": "g4bb",
+            "created_at": "2026-11-20T21:02:44.458685Z",
+            "updated_at": "2026-11-20T21:02:44Z",
+            "raw": {"defaultPermissionPolicy": "GRANT"},
+        }
+    ]
     _mdm(stub, monkeypatch)
     return stub
 
@@ -395,6 +408,151 @@ def test_resend_says_when_it_sends_nothing(fleet: _Fleet, arguments: list[str], 
     assert result.exit_code == code, result.output
     assert says in result.output
     assert not _changes(fleet)
+
+
+#: After the fixture's policy was last sent
+LATER = "2026-11-20T21:10:02Z"
+
+
+def _policy_changes(fleet: _Fleet) -> list[tuple[str, str]]:
+    return [change for change in _changes(fleet) if "/configuration_profiles" in change[1]]
+
+
+def test_name_sends_the_policy_again_when_a_phone_enrolled_after_it(fleet: _Fleet) -> None:
+    """Fleet can write a bare policy over a new phone's, and never sends ours again by itself
+
+    Measured: the certificate installs, Chrome is not allowed to use it, and Deploy App says
+    "Certificate Authentication Failed". Fleet's own copy uploaded again reaches the phone.
+    """
+    fleet.hosts = [
+        _host(31, "failed", detail=NO_NAME, enrolled=LATER),
+        _host(32, "failed", detail=NO_NAME, enrolled=LATER),
+        _host(33, "verified", "OTTER1"),
+    ]
+
+    result = CliRunner().invoke(cli_group, ["name", "31=OTTER4"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == [
+        "Host 31 is OTTER4",
+        "Policy sent again: 2 phones enrolled after it was last sent",
+    ]
+    assert _policy_changes(fleet) == [("DELETE", "/configuration_profiles/g4bb"), ("POST", "/configuration_profiles")]
+    assert [profile["raw"] for profile in fleet.profiles] == [{"defaultPermissionPolicy": "GRANT"}]
+
+
+def test_resend_sends_the_policy_again_when_a_phone_enrolled_after_it(fleet: _Fleet) -> None:
+    """The phone asked again may be one whose policy Fleet overwrote"""
+    fleet.hosts = [_host(31, "failed", "OTTER4", REFUSED, enrolled=LATER), _host(32, "verified", "OTTER5")]
+
+    result = CliRunner().invoke(cli_group, ["resend"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == [
+        "Host 31 (OTTER4): certificate asked for again",
+        "Policy sent again: 1 phone enrolled after it was last sent",
+    ]
+    assert _policy_changes(fleet) == [("DELETE", "/configuration_profiles/g4bb"), ("POST", "/configuration_profiles")]
+
+
+def test_a_policy_sent_again_is_then_left_alone(fleet: _Fleet) -> None:
+    """Fleet stamps an upload with its own clock, so the policy is newer than every phone already there
+
+    Sent on every run, it would be rewritten under phones still installing their apps.
+    """
+    fleet.now = "2026-11-20T21:30:00.123456Z"
+    fleet.hosts = [
+        _host(31, "failed", detail=NO_NAME, enrolled=LATER),
+        _host(32, "failed", detail=NO_NAME, enrolled=LATER),
+    ]
+
+    first = CliRunner().invoke(cli_group, ["name", "31=OTTER4"])
+    fleet.calls.clear()
+    second = CliRunner().invoke(cli_group, ["name", "32=OTTER5"])
+
+    assert first.stdout.splitlines()[-1] == "Policy sent again: 2 phones enrolled after it was last sent"
+    assert second.exit_code == 0, second.output
+    assert second.stdout.splitlines() == ["Host 32 is OTTER5"]
+    assert not _policy_changes(fleet)
+
+
+@pytest.mark.parametrize(("policy", "enrolled"), [(True, "2026-11-01T19:38:12Z"), (False, LATER)])
+def test_the_policy_is_left_alone_unless_a_phone_enrolled_after_it(fleet: _Fleet, policy: bool, enrolled: str) -> None:
+    """Every phone enrolled before it was last sent, or the team has no policy to send"""
+    if not policy:
+        fleet.profiles = []
+    fleet.hosts = [_host(31, "failed", detail=NO_NAME, enrolled=enrolled)]
+
+    result = CliRunner().invoke(cli_group, ["name", "31=OTTER4"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == ["Host 31 is OTTER4"]
+    assert _changes(fleet) == [("PUT", "/hosts/31/device_mapping"), ("POST", "/hosts/31/certificates/81/resend")]
+
+
+@pytest.mark.parametrize(
+    ("command", "said"),
+    [
+        (["name", "31=OTTER4"], "Host 31 is already OTTER4"),
+        (["name", "--all", "OTTER"], "Nothing to name"),
+        (["resend"], "Nothing to resend"),
+    ],
+)
+def test_the_policy_is_sent_again_only_after_a_phone_is_named_or_asked_again(
+    fleet: _Fleet, command: list[str], said: str
+) -> None:
+    """A run that changed nothing leaves the policy alone, as it would a phone still installing apps"""
+    fleet.hosts = [_host(31, "verified", "OTTER4", enrolled=LATER)]
+
+    result = CliRunner().invoke(cli_group, command)
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == [said]
+    assert not _changes(fleet)
+
+
+def test_a_policy_fleet_refuses_is_said_after_the_names(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The phones are named all the same, and the refusal is said as any other"""
+    answer = fleet.handler
+
+    def refusing(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("alt") == "media":
+            return httpx.Response(500, text="database is locked")
+        return answer(request)
+
+    monkeypatch.setattr(fleet, "handler", refusing)
+    _mdm(fleet, monkeypatch)
+    fleet.hosts = [_host(31, "failed", detail=NO_NAME, enrolled=LATER)]
+
+    result = CliRunner().invoke(cli_group, ["name", "31=OTTER4"])
+
+    assert result.exit_code == 1
+    assert result.output.splitlines()[0] == "Host 31 is OTTER4"
+    assert "Fleet refused: GET /api/latest/fleet/configuration_profiles/g4bb?alt=media answered 500" in result.output
+    assert _named(fleet) == {31: "OTTER4"}
+    assert not _policy_changes(fleet)
+
+
+def test_a_policy_lost_between_delete_and_upload_is_said(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The team then has no policy, every phone in it loses the settings, and a later run sees nothing"""
+    answer = fleet.handler
+
+    def refusing(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST" and request.url.path.endswith("/configuration_profiles"):
+            return httpx.Response(502, text="Bad Gateway")
+        return answer(request)
+
+    monkeypatch.setattr(fleet, "handler", refusing)
+    _mdm(fleet, monkeypatch)
+    fleet.hosts = [_host(31, "failed", detail=NO_NAME, enrolled=LATER)]
+
+    result = CliRunner().invoke(cli_group, ["name", "31=OTTER4"])
+
+    assert result.exit_code == 1
+    assert result.output.splitlines()[0] == "Host 31 is OTTER4"
+    assert "may now be missing" in result.output
+    assert "Run apply to put it back" in result.output
+    assert not fleet.profiles
 
 
 @pytest.mark.parametrize("command", [["phones"], ["name", "31=OTTER4"], ["resend"]])

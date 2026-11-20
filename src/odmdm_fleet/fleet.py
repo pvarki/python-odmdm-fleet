@@ -5,6 +5,7 @@ say which. None of it mentions a product: what to install arrives in the templat
 """
 
 import dataclasses
+import datetime
 import json
 import logging
 import time
@@ -79,6 +80,18 @@ class Phone:
         if "Network error" in self.detail:
             return "could not reach Deploy App"
         return self.detail or "failed"
+
+
+def _moment(value: str) -> datetime.datetime:
+    """A time Fleet wrote, as a time
+
+    Fleet writes a profile's created_at to the microsecond and its updated_at and a host's
+    last_enrolled_at to the second, so as strings "...44Z" sorts after "...44.458685Z".
+    """
+    try:
+        return datetime.datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise FleetError(f"the time {value!r} could not be read") from exc
 
 
 class FleetMdm:
@@ -217,27 +230,60 @@ class FleetMdm:
         for Play to finish an install. So Fleet's own copy is what gets compared, because this
         runs once per command and has nothing of its own to remember between runs.
 
-        force exists because a profile is delivered when the PROFILE changes, not when a host
-        arrives, so one created before a device joined is never sent to it.
+        force exists because Fleet can overwrite a newly enrolled phone's policy with a bare one
+        moments after sending ours, then shows ours as verified and never sends it again. Only a
+        new upload reaches that phone. resend_policy makes one when a phone enrolled after the
+        last upload.
         """
         profiles = self._call("GET", f"/api/latest/fleet/configuration_profiles?team_id={team}").get("profiles", [])
         here = [p for p in profiles if p.get("name") == name]
         if len(here) == 1 and not force and self._policy_in_fleet(here[0]["profile_uuid"]) == fragment:
             return
-        for existing in here:
-            self._call("DELETE", f"/api/latest/fleet/configuration_profiles/{existing['profile_uuid']}")
-        self._upload(
-            "/api/latest/fleet/configuration_profiles",
-            {"team_id": str(team)},
-            f"{name}.json",
-            json.dumps(fragment, indent=2, sort_keys=True).encode("utf-8"),
-            file_field="profile",
-        )
+        try:
+            for existing in here:
+                self._call("DELETE", f"/api/latest/fleet/configuration_profiles/{existing['profile_uuid']}")
+            self._upload(
+                "/api/latest/fleet/configuration_profiles",
+                {"team_id": str(team)},
+                f"{name}.json",
+                json.dumps(fragment, indent=2, sort_keys=True).encode("utf-8"),
+                file_field="profile",
+            )
+        except FleetError as exc:
+            if not here:
+                raise
+            # Between the delete and the upload the team has no policy, and every phone in it loses the settings
+            raise FleetError(
+                f"policy {name} was being replaced in team {team} and may now be missing ({exc}). "
+                "Run apply to put it back"
+            ) from exc
         LOGGER.info("Uploaded policy %s to team %s", name, team)
 
     def _policy_in_fleet(self, profile_uuid: str) -> dict[str, Any]:
         """The policy as Fleet holds it; without alt=media this answers with metadata only"""
         return self._call("GET", f"/api/latest/fleet/configuration_profiles/{profile_uuid}?alt=media")
+
+    def resend_policy(self, team: int, phones: list[Phone], name: str = POLICY_NAME) -> int:
+        """Upload the team's policy again if any of the phones enrolled after it was last sent
+
+        Answers how many did, 0 when nothing was sent. Measured on Fleet 4.90.1: a phone that
+        enrols is sent our policy, and seconds later Fleet can write one holding only its status
+        reporting over it. Fleet goes on showing ours as verified there and never sends it again,
+        so the phone installs its certificate and Chrome is not allowed to use it. The same
+        policy uploaded again reaches the phone and leaves its certificate and apps alone.
+
+        Fleet's own copy is what goes, so no template is needed. A phone that enrols again onto its
+        old host keeps its old last_enrolled_at, and is not seen here: apply --force-policy reaches it.
+        """
+        profiles = self._call("GET", f"/api/latest/fleet/configuration_profiles?team_id={team}").get("profiles", [])
+        profile = next((p for p in profiles if p.get("name") == name), None)
+        if not profile:
+            return 0
+        sent = _moment(str(profile.get("updated_at") or profile.get("created_at") or ""))
+        later = [phone for phone in phones if phone.enrolled and _moment(phone.enrolled) > sent]
+        if later:
+            self.ensure_policy(team, self._policy_in_fleet(profile["profile_uuid"]), name=name, force=True)
+        return len(later)
 
     def ensure_link_app(self, team: int, title: str, url: str) -> str:
         """A managed web app, so the deployment has an icon on the launcher

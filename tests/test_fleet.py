@@ -32,6 +32,9 @@ class _Fleet:
         self.calls: list[tuple[str, str]] = []
         self.titles: list[dict[str, Any]] = []
         self.profiles: list[dict[str, Any]] = []
+        #: When an upload lands. Fleet lists a profile's created_at to the microsecond and its
+        #: updated_at to the second (a live Fleet 4.90.1).
+        self.now = "2026-11-20T21:02:44.458685Z"
         self.certificates: list[dict[str, Any]] = []
         self.hosts: list[dict[str, Any]] = []
         self.web_apps: list[dict[str, Any]] = []
@@ -182,7 +185,13 @@ class _Fleet:
             raw = re.search(rb"application/json\r\n\r\n(.*)\r\n--", request.read(), re.DOTALL)
             assert raw, "the policy must be uploaded as JSON"
             self.profiles.append(
-                {"name": "rmscep-policy", "profile_uuid": f"uuid-{len(self.profiles)}", "raw": json.loads(raw.group(1))}
+                {
+                    "name": "rmscep-policy",
+                    "profile_uuid": f"uuid-{len(self.profiles)}",
+                    "created_at": self.now,
+                    "updated_at": self.now.split(".")[0] + "Z",
+                    "raw": json.loads(raw.group(1)),
+                }
             )
             return httpx.Response(200, json={})
         if "/configuration_profiles/" in path and request.method == "GET":
@@ -254,7 +263,7 @@ def test_a_changed_policy_replaces_the_old_one(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_force_reaches_a_host_that_just_joined(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A profile is delivered when the PROFILE changes, not when a host arrives"""
+    """Fleet can overwrite a new host's policy with a bare one, and never sends ours again by itself"""
     fleet = _Fleet()
     mdm = _mdm(fleet, monkeypatch)
     mdm.apply("rmscep", TEMPLATE)
@@ -566,3 +575,44 @@ def test_the_launcher_title_names_the_deployment_and_fits() -> None:
     long_name = FleetMdm._published_title("Deploy App", "https://mtls.thoughtful-hippopotamus.example.org/")
     assert len(long_name) < 30
     assert long_name.startswith("Deploy App (thoughtful")
+
+
+@pytest.mark.parametrize(
+    ("created", "updated", "enrolled", "later"),
+    [
+        ("2026-11-20T21:02:44.458685Z", "2026-11-20T21:02:44Z", "2026-11-20T21:02:44Z", 0),
+        ("2026-11-20T21:02:44.458685Z", "2026-11-20T21:02:44Z", "2026-11-20T21:10:02Z", 1),
+        ("2026-11-20T21:02:44.458685Z", None, "2026-11-20T21:02:44Z", 0),
+        ("2026-11-20T21:02:44.458685Z", None, "2026-11-20T21:02:45Z", 1),
+        ("2026-11-20T21:02:44.458685Z", "2026-11-20T21:20:00Z", "2026-11-20T21:10:02Z", 0),
+    ],
+)
+def test_enrolment_and_upload_are_compared_as_times(
+    monkeypatch: pytest.MonkeyPatch, created: str, updated: str | None, enrolled: str, later: int
+) -> None:
+    """Fleet writes created_at to the microsecond, updated_at and last_enrolled_at to the second
+
+    As strings, "...44Z" sorts after "...44.458685Z", so a phone that enrolled before the upload
+    would read as later. updated_at is the last upload when Fleet gives it.
+    """
+    fleet = _Fleet()
+    profile = {"name": "rmscep-policy", "profile_uuid": "g4bb", "created_at": created, "raw": TEMPLATE.policy}
+    fleet.profiles = [profile | ({"updated_at": updated} if updated else {})]
+    fleet.hosts = [_host(31, enrolled=enrolled), _host(32, enrolled="")]
+    mdm = _mdm(fleet, monkeypatch)
+
+    assert mdm.resend_policy(7, mdm.phones(7, "rmscep")) == later
+    assert _policy_uploads(fleet) == later
+    assert [p["raw"] for p in fleet.profiles] == [TEMPLATE.policy]
+
+
+def test_a_policy_without_a_time_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rather than ending a command that has already named phones in a traceback"""
+    fleet = _Fleet()
+    fleet.profiles = [{"name": "rmscep-policy", "profile_uuid": "g4bb", "raw": TEMPLATE.policy}]
+    fleet.hosts = [_host(31)]
+    mdm = _mdm(fleet, monkeypatch)
+
+    with pytest.raises(FleetError, match="the time '' could not be read"):
+        mdm.resend_policy(7, mdm.phones(7, "rmscep"))
+    assert not _policy_uploads(fleet)

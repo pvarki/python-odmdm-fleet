@@ -29,7 +29,8 @@ them, and each gets its certificate once it has a name.
 
        odmdm-fleet challenge
 
-3. Enrol phones into the ``Deploy App`` team, as many as you like, in any order.
+3. Enrol phones into the ``Deploy App`` team, as many as you like, in any order. Name them once
+   every phone in the team has its apps: naming can send the policy to all of them again.
 
 4. Name them, all at once or a few at a time::
 
@@ -46,6 +47,8 @@ next batch.
 
 Without this tool, in Fleet: open the phone, **Edit user** to give it its callsign, then under
 **OS settings** pick the certificate and **Resend**. Naming alone does not send the request again.
+Once the phones have enrolled and their apps have arrived, delete the policy in Fleet and upload
+it again: Fleet can overwrite a new phone's policy, see `The order that works`_.
 
 Phones already enrolled in another Fleet team: transfer them into this team in Fleet, then name
 them like the rest. Apps install only at enrolment, so a transferred phone gets its certificate but
@@ -57,7 +60,7 @@ Commands
 
 .. code-block:: bash
 
-    odmdm-fleet apply                     # state what devices need; --force-policy after one joins
+    odmdm-fleet apply                     # state what devices need; --force-policy sends the policy again
     odmdm-fleet apply --dry-run           # validate the template without touching Fleet
     odmdm-fleet challenge                 # give Fleet a new window's challenge, nothing else
     odmdm-fleet phones                    # each phone's host id, callsign, model and certificate
@@ -120,13 +123,19 @@ The certificate subject is the contract with the deployment. Its common name bec
 The order that works
 --------------------
 
-Three facts about managed Android pull against each other. Each was learned by getting it wrong.
+Three facts about managed Android and Fleet pull against each other. Each was learned by getting
+it wrong.
 
 1. **Apps install at enrolment and at no other time.** The team must carry them before a phone
    joins. A phone transferred in from a team with another launcher package loses that launcher
    and never gets this one.
-2. **A profile is delivered when the profile changes, not when a phone arrives.** One uploaded
-   before a phone joined is never sent to it, so a first enrolment needs ``--force-policy``.
+2. **Fleet can overwrite a new phone's policy moments after sending it.** It sends a phone that
+   enrols the team's policy, and seconds later can write a bare one over it. It goes on showing
+   the policy as verified on that phone and never sends it again, so the phone has its certificate
+   but Chrome may not use it, and Deploy App says "Certificate Authentication Failed". ``name`` and
+   ``resend`` send the policy again, to every phone in the team, when a phone enrolled after it
+   was last sent. By hand it is ``apply --force-policy``, or deleting the policy in Fleet and
+   uploading it again.
 3. **A policy rewritten while apps are installing stops them installing.** Leave the phones alone
    until the apps have arrived.
 

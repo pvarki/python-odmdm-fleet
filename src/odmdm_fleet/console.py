@@ -247,6 +247,13 @@ def _refusal(found: dict[int, Phone], wanted: list[tuple[int, str]]) -> str:
     return ""
 
 
+def _policy_again(fleet: FleetMdm, team_id: int, found: dict[int, Phone]) -> None:
+    """Send the policy again if a phone enrolled after it was last sent, as Fleet may have overwritten it there"""
+    later = fleet.resend_policy(team_id, list(found.values()))
+    if later:
+        click.echo(f"Policy sent again: {later} phone{'' if later == 1 else 's'} enrolled after it was last sent")
+
+
 @cli_group.command(name="name")
 @click.pass_context
 @click.argument("pairs", nargs=-1, metavar="[HOST=CALLSIGN]...")
@@ -279,6 +286,10 @@ def name(  # pylint: disable=too-many-arguments,too-many-positional-arguments
 
     Nothing is changed if a name is not a callsign, is given twice or belongs to another phone in
     the team, or if a host is not in the team.
+
+    The team's policy is sent again, to every phone in it, if a phone enrolled after it was last
+    sent, because Fleet can overwrite a new phone's policy. So name phones once every phone in the
+    team has its apps.
     """
     if bool(pairs) == bool(prefix) or (start is not None and not prefix):
         raise click.UsageError("Give HOST=CALLSIGN for each phone, or --all PREFIX")
@@ -301,6 +312,7 @@ def name(  # pylint: disable=too-many-arguments,too-many-positional-arguments
             ctx.exit(0)
             return
         template = fleet.certificate_template(team_id, config.KEY_ALIAS)
+        named = False
         for host, callsign in wanted:
             old = found[host]
             # Asked again under the name it holds, it is refused as taken: a working phone then shows as refused
@@ -308,12 +320,15 @@ def name(  # pylint: disable=too-many-arguments,too-many-positional-arguments
                 click.echo(f"Host {host} is already {old.callsign}")
                 continue
             fleet.name_host(host, callsign, template if old.status else None)
+            named = True
             line = f"Host {host} is {callsign}"
             if not old.status:
                 line += ". Fleet has no certificate request for it, so nothing was sent"
             elif old.status == "verified" and old.callsign:
                 line += f". It was {old.callsign} and still has that certificate: revoke {old.callsign} in Deploy App."
             click.echo(line)
+        if named:
+            _policy_again(fleet, team_id, found)
     except FleetError as exc:
         click.echo(f"Fleet refused: {exc}", err=True)
         ctx.exit(1)
@@ -337,7 +352,7 @@ def resend(ctx: click.Context, hosts: tuple[int, ...], fleet_url: str | None, te
 
     A host id is asked whatever its state. A phone that has its certificate asks again under the
     name it holds and is refused, and reads as refused from then on though that certificate still
-    works.
+    works. As with name, the team's policy is sent again if a phone enrolled after it was last sent.
     """
     fleet = _fleet(ctx, fleet_url)
     if not fleet:
@@ -359,6 +374,7 @@ def resend(ctx: click.Context, hosts: tuple[int, ...], fleet_url: str | None, te
         for host in chosen:
             fleet.resend(host, template)
             click.echo(f"Host {host} ({found[host].callsign or 'no name'}): certificate asked for again")
+        _policy_again(fleet, team_id, found)
     except FleetError as exc:
         click.echo(f"Fleet refused: {exc}", err=True)
         ctx.exit(1)
