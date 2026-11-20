@@ -43,12 +43,34 @@ class _Fleet:
         self.calls.append((request.method, path))
         if path.endswith("/hosts") and request.method == "GET":
             return httpx.Response(200, json={"hosts": [{"id": h["id"]} for h in self.hosts]})
-        if path.endswith("/device_mapping"):
-            which = int(path.split("/hosts/")[1].split("/")[0])
-            found = next(h for h in self.hosts if h["id"] == which)
-            if request.method == "PUT":
-                found["device_mapping"] = [json.loads(request.content)]
-            return httpx.Response(200, json={"device_mapping": found.get("device_mapping") or []})
+        if path.endswith("/device_mapping") and request.method == "PUT":
+            # The name shows in the host detail as its IdP user, which is what the certificate reads
+            found = next(h for h in self.hosts if h["id"] == int(path.split("/")[-2]))
+            found["end_users"] = [{"idp_username": json.loads(request.content)["email"], "idp_info_updated_at": None}]
+            return httpx.Response(200, json={})
+        if path.endswith("/resend") and request.method == "POST":
+            # Fleet finds the template through the host's own row, so a host without one is not
+            # found (read in Fleet 4.90.1's source). A row still pending is refused, and any other
+            # starts over as pending; the answer has no body (both seen on a live Fleet 4.90.1).
+            found = next(h for h in self.hosts if h["id"] == int(path.split("/")[-4]))
+            template = int(path.split("/")[-2])
+            rows = [
+                r
+                for r in found["mdm"]["profiles"]
+                if r.get("certificate_template_id") == template and r["operation_type"] == "install"
+            ]
+            if not rows:
+                return httpx.Response(404, json={"message": "Resource Not Found"})
+            if rows[0]["status"] == "pending":
+                return httpx.Response(
+                    400,
+                    json={
+                        "message": "Bad request",
+                        "errors": [{"name": "base", "reason": "Couldn't resend pending certificate template."}],
+                    },
+                )
+            rows[0].update(status="pending", detail="")
+            return httpx.Response(200)
         if "/hosts/" in path and request.method == "GET":
             which = int(path.rsplit("/", 1)[-1])
             return httpx.Response(200, json={"host": next(h for h in self.hosts if h["id"] == which)})
@@ -375,6 +397,15 @@ def _host(
         "end_users": [{"idp_username": name, "idp_info_updated_at": None}] if name else [],
         "mdm": {"profiles": rows},
     }
+
+
+def test_a_resend_refused_for_another_reason_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only a request still pending needs nothing; a host with no request at all is not found"""
+    fleet = _Fleet()
+    fleet.hosts = [_host(31)]
+
+    with pytest.raises(FleetError, match="answered 404"):
+        _mdm(fleet, monkeypatch).resend(31, 81)
 
 
 def _with_cert(authority: str = "RMSCEP") -> MdmTemplate:

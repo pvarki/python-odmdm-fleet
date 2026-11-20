@@ -446,6 +446,38 @@ class FleetMdm:
             )
         return sorted(found, key=lambda phone: (phone.enrolled, phone.id))
 
+    def certificate_template(self, team: int, name: str) -> int:
+        """The id of the team's certificate template of that name"""
+        for template in self._call("GET", f"/api/latest/fleet/certificates?team_id={team}").get("certificates", []):
+            if template.get("name") == name:
+                return int(template["id"])
+        raise FleetError(f"team {team} has no certificate template named {name}: run apply first")
+
+    def name_host(self, host: int, callsign: str, template: int | None) -> None:
+        """Give the host its callsign, and have Fleet ask for its certificate again under it
+
+        A phone enrols before anybody can name it, so its first request has already failed for
+        want of a name, and naming it does not send that request again by itself. A host with no
+        request yet gets no template: Fleet has none to send again (404, read in Fleet 4.90.1's
+        source), and fills the name in when it makes one.
+        """
+        self._call("PUT", f"/api/latest/fleet/hosts/{host}/device_mapping", {"email": callsign, "source": "idp"})
+        if template:
+            self.resend(host, template)
+
+    def resend(self, host: int, template: int) -> None:
+        """Have Fleet send the host its certificate request again, for one more attempt
+
+        The phone acts on it at its next check-in. Fleet refuses a request still pending (400), and
+        that one needs nothing: it is filled in when it goes, with the name the host has by then.
+        Measured on Fleet 4.90.1.
+        """
+        try:
+            self._call("POST", f"/api/latest/fleet/hosts/{host}/certificates/{template}/resend")
+        except FleetError as exc:
+            if "answered 400" not in str(exc) or "pending" not in str(exc):
+                raise
+
     # --- the whole statement --------------------------------------------------
 
     def apply(

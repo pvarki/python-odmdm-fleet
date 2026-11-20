@@ -10,7 +10,7 @@ from libadvian.logging import init_logging
 from odmdm_fleet import __version__
 
 from . import config, template
-from .fleet import FleetError, FleetMdm
+from .fleet import FleetError, FleetMdm, Phone
 
 LOGGER = logging.getLogger(__name__)
 
@@ -197,4 +197,125 @@ def phones(ctx: click.Context, fleet_url: str | None, team: str | None) -> None:
         click.echo(f"{phone.id:<5} {phone.callsign or '-':<12} {phone.model:<26} {phone.enrolled[:10]}  {phone.state}")
     if not found:
         click.echo("No phones in the team")
+    ctx.exit(0)
+
+
+def _pairs(values: tuple[str, ...]) -> list[tuple[int, str]]:
+    """HOST=CALLSIGN arguments, as host ids and callsigns"""
+    pairs = []
+    for value in values:
+        host, _, callsign = value.partition("=")
+        if not host.isdigit() or not callsign:
+            raise click.UsageError(f"{value!r} is not HOST=CALLSIGN, the host being the id that phones prints")
+        pairs.append((int(host), callsign))
+    return pairs
+
+
+def _numbered(found: list[Phone], prefix: str, start: int | None) -> list[tuple[int, str]]:
+    """PREFIX<n> for every phone without a name, in enrolment order
+
+    Numbered from start, else from one above the highest PREFIX<n> already in the team.
+    """
+    if start is None:
+        used = (re.fullmatch(re.escape(prefix) + r"(\d+)", phone.callsign, re.IGNORECASE) for phone in found)
+        start = max((int(match.group(1)) for match in used if match), default=0) + 1
+    waiting = [phone.id for phone in found if not phone.callsign]
+    return [(host, f"{prefix}{start + n}") for n, host in enumerate(waiting)]
+
+
+def _refusal(found: dict[int, Phone], wanted: list[tuple[int, str]]) -> str:
+    """Why these names cannot all be given, or empty when they can
+
+    Callsigns are compared without case, as the deployment compares them.
+    """
+    hosts: set[int] = set()
+    callsigns: set[str] = set()
+    for host, callsign in wanted:
+        if host not in found:
+            return f"host {host} is not in the team"
+        if host in hosts:
+            return f"host {host} is named twice"
+        if not CALLSIGN.fullmatch(callsign):
+            return f"{callsign}: a callsign is 3-32 letters, digits or hyphens, and does not start or end with a hyphen"
+        if callsign.lower() in callsigns:
+            return f"{callsign} is given twice"
+        owner = next((p.id for p in found.values() if p.id != host and p.callsign.lower() == callsign.lower()), 0)
+        if owner:
+            return f"{callsign} already belongs to host {owner}"
+        hosts.add(host)
+        callsigns.add(callsign.lower())
+    return ""
+
+
+@cli_group.command(name="name")
+@click.pass_context
+@click.argument("pairs", nargs=-1, metavar="[HOST=CALLSIGN]...")
+@click.option(
+    "--all",
+    "prefix",
+    metavar="PREFIX",
+    default=None,
+    help="Name every phone that has no name PREFIX<n>, in enrolment order",
+)
+@click.option(
+    "--start", type=int, metavar="N", default=None, help="The first n for --all (default: one above the highest in use)"
+)
+@click.option("--fleet-url", default=None, help="Base URL of Fleet's API (default: ODMDM_FLEET_URL)")
+@click.option("--team", default=None, help="The team the phones are in (default: ODMDM_FLEET_TEAM)")
+def name(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    ctx: click.Context,
+    pairs: tuple[str, ...],
+    prefix: str | None,
+    start: int | None,
+    fleet_url: str | None,
+    team: str | None,
+) -> None:
+    """Name phones, and have Fleet send them certificates
+
+    HOST=CALLSIGN for as many phones as you like, in any order, the host being the id that phones
+    prints. Or --all PREFIX, which numbers every phone that has no name yet. Each phone gets its
+    certificate at its next check-in, within about 15 minutes. A phone that already has its
+    certificate under the name is left alone.
+
+    Nothing is changed if a name is not a callsign, is given twice or belongs to another phone in
+    the team, or if a host is not in the team.
+    """
+    if bool(pairs) == bool(prefix) or (start is not None and not prefix):
+        raise click.UsageError("Give HOST=CALLSIGN for each phone, or --all PREFIX")
+    wanted = _pairs(pairs)
+    fleet = _fleet(ctx, fleet_url)
+    if not fleet:
+        return
+    try:
+        team_id = fleet.team_id(team or config.TEAM)
+        found = {phone.id: phone for phone in fleet.phones(team_id, config.KEY_ALIAS)}
+        if prefix:
+            wanted = _numbered(list(found.values()), prefix, start)
+        refused = _refusal(found, wanted)
+        if refused:
+            click.echo(f"Nothing named: {refused}", err=True)
+            ctx.exit(1)
+            return
+        if not wanted:
+            click.echo("Nothing to name")
+            ctx.exit(0)
+            return
+        template = fleet.certificate_template(team_id, config.KEY_ALIAS)
+        for host, callsign in wanted:
+            old = found[host]
+            # Asked again under the name it holds, it is refused as taken: a working phone then shows as refused
+            if old.status == "verified" and old.callsign.lower() == callsign.lower():
+                click.echo(f"Host {host} is already {old.callsign}")
+                continue
+            fleet.name_host(host, callsign, template if old.status else None)
+            line = f"Host {host} is {callsign}"
+            if not old.status:
+                line += ". Fleet has no certificate request for it, so nothing was sent"
+            elif old.status == "verified" and old.callsign:
+                line += f". It was {old.callsign} and still has that certificate: revoke {old.callsign} in Deploy App."
+            click.echo(line)
+    except FleetError as exc:
+        click.echo(f"Fleet refused: {exc}", err=True)
+        ctx.exit(1)
+        return
     ctx.exit(0)

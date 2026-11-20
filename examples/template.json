@@ -38,7 +38,7 @@
   "certificate": {
     "_comment": [
       "The template Fleet fills in per phone. Its common name becomes the phone's callsign: 3-32",
-      "letters, digits or inner hyphens. This is the name `odmdm-fleet plan` gives a phone. To skip",
+      "letters, digits or inner hyphens. This is the name `odmdm-fleet name` gives a phone. To skip",
       "naming, CN=$FLEET_VAR_HOST_HARDWARE_SERIAL works for company-owned phones only.",
       "The name becomes the Android keystore alias, so it is per deployment, not per phone."
     ],

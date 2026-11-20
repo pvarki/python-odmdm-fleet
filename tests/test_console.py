@@ -18,13 +18,14 @@ from .test_fleet import _Fleet, _host, _mdm
 
 @pytest.fixture
 def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Fleet:
-    """A configured connector talking to a stubbed Fleet whose team is "rmscep" """
+    """A configured connector talking to a stubbed Fleet whose team "rmscep" has its certificate template"""
     token = tmp_path / "token"
     token.write_text("token\n", encoding="utf-8")
     monkeypatch.setattr(config, "URL", "https://mdm.test")
     monkeypatch.setattr(config, "TOKEN_FILE", token)
     monkeypatch.setattr(config, "TEAM", "rmscep")
     stub = _Fleet()
+    stub.certificates = [{"id": 81, "name": "rmscep", "subject_name": "CN=$VAR", "certificate_authority_id": 3}]
     _mdm(stub, monkeypatch)
     return stub
 
@@ -176,3 +177,175 @@ def test_an_empty_team_says_so(fleet: _Fleet) -> None:
 
     assert result.exit_code == 0, result.output
     assert "No phones in the team" in result.output
+
+
+def _named(fleet: _Fleet) -> dict[int, str]:
+    return {h["id"]: h["end_users"][0]["idp_username"] if h["end_users"] else "" for h in fleet.hosts}
+
+
+def _changes(fleet: _Fleet) -> list[tuple[str, str]]:
+    return [(method, path.removeprefix("/api/latest/fleet")) for method, path in fleet.calls if method != "GET"]
+
+
+def test_name_gives_any_number_of_phones_their_callsigns(fleet: _Fleet) -> None:
+    """In any order, each named and then asked for its certificate again under the name"""
+    fleet.hosts = [_host(host, "failed", detail=NO_NAME) for host in (31, 32, 33)]
+
+    result = CliRunner().invoke(cli_group, ["name", "33=OTTER5", "31=OTTER4"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == ["Host 33 is OTTER5", "Host 31 is OTTER4"]
+    assert _named(fleet) == {31: "OTTER4", 32: "", 33: "OTTER5"}
+    assert _changes(fleet) == [
+        ("PUT", "/hosts/33/device_mapping"),
+        ("POST", "/hosts/33/certificates/81/resend"),
+        ("PUT", "/hosts/31/device_mapping"),
+        ("POST", "/hosts/31/certificates/81/resend"),
+    ]
+
+
+def test_a_request_still_pending_takes_the_name_without_a_resend(fleet: _Fleet) -> None:
+    """Fleet refuses to resend it, and it needs none: it is filled in when it goes"""
+    fleet.hosts = [_host(31, "pending")]
+
+    result = CliRunner().invoke(cli_group, ["name", "31=OTTER4"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == ["Host 31 is OTTER4"]
+    assert _named(fleet) == {31: "OTTER4"}
+
+
+def test_a_phone_with_its_certificate_under_the_name_is_left_alone(fleet: _Fleet) -> None:
+    """Asked again under the name it holds, it is refused as taken and then reads as refused"""
+    fleet.hosts = [_host(31, "verified", "OTTER4@CODE"), _host(32, "failed", detail=NO_NAME)]
+
+    result = CliRunner().invoke(cli_group, ["name", "31=otter4", "32=OTTER5"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == ["Host 31 is already OTTER4", "Host 32 is OTTER5"]
+    assert _changes(fleet) == [("PUT", "/hosts/32/device_mapping"), ("POST", "/hosts/32/certificates/81/resend")]
+    assert _named(fleet)[31] == "OTTER4@CODE"
+
+
+def test_a_phone_with_no_request_is_named_and_the_batch_goes_on(fleet: _Fleet) -> None:
+    """Fleet has no request to send it again, and fills the name in when it makes one"""
+    fleet.hosts = [_host(31, "failed", detail=NO_NAME), _host(32), _host(33, "failed", detail=NO_NAME)]
+
+    result = CliRunner().invoke(cli_group, ["name", "--all", "OTTER"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == [
+        "Host 31 is OTTER1",
+        "Host 32 is OTTER2. Fleet has no certificate request for it, so nothing was sent",
+        "Host 33 is OTTER3",
+    ]
+    assert _named(fleet) == {31: "OTTER1", 32: "OTTER2", 33: "OTTER3"}
+    assert ("POST", "/hosts/32/certificates/81/resend") not in _changes(fleet)
+
+
+@pytest.mark.parametrize(
+    ("first", "start", "expected"),
+    [
+        ("KETTU1", [], {42: "OTTER1", 43: "OTTER2", 41: "OTTER3"}),
+        ("otter7", [], {42: "OTTER8", 43: "OTTER9", 41: "OTTER10"}),
+        ("OTTER7", ["--start", "20"], {42: "OTTER20", 43: "OTTER21", 41: "OTTER22"}),
+    ],
+)
+def test_name_all_numbers_the_phones_without_a_name(
+    fleet: _Fleet, first: str, start: list[str], expected: dict[int, str]
+) -> None:
+    """In enrolment order, then host id, from one above the highest number in use unless told"""
+    fleet.hosts = [
+        _host(40, "verified", first, enrolled="2026-11-01T08:00:00Z"),
+        _host(41, "failed", detail=NO_NAME, enrolled="2026-11-03T08:00:00Z"),
+        _host(43, "failed", detail=NO_NAME, enrolled="2026-11-02T08:00:00Z"),
+        _host(42, "failed", detail=NO_NAME, enrolled="2026-11-02T08:00:00Z"),
+    ]
+
+    result = CliRunner().invoke(cli_group, ["name", "--all", "OTTER", *start])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == [f"Host {host} is {callsign}" for host, callsign in expected.items()]
+    assert _named(fleet) == {40: first, **expected}
+
+
+def test_name_all_with_every_phone_named_names_nothing(fleet: _Fleet) -> None:
+    """A second run finds nobody waiting, and changes nothing"""
+    fleet.hosts = [_host(31, "verified", "OTTER1")]
+
+    result = CliRunner().invoke(cli_group, ["name", "--all", "OTTER"])
+
+    assert result.exit_code == 0, result.output
+    assert "Nothing to name" in result.output
+    assert not _changes(fleet)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "says"),
+    [
+        (["31=OT"], "OT: a callsign is 3-32 letters"),
+        (["31=OTTER-"], "OTTER-: a callsign is 3-32 letters"),
+        (["--all", "O"], "O1: a callsign is 3-32 letters"),
+        (["31=OTTER4", "32=otter4"], "otter4 is given twice"),
+        (["31=OTTER4", "31=OTTER5"], "host 31 is named twice"),
+        (["31=otter9"], "otter9 already belongs to host 33"),
+        (["--all", "OTTER", "--start", "9"], "OTTER9 already belongs to host 33"),
+        (["31=OTTER4", "99=OTTER5"], "host 99 is not in the team"),
+    ],
+)
+def test_name_changes_nothing_unless_every_name_can_be_given(fleet: _Fleet, arguments: list[str], says: str) -> None:
+    """A typo refuses the whole command, rather than leaving half a batch named"""
+    fleet.hosts = [
+        _host(31, "failed", detail=NO_NAME),
+        _host(32, "failed", detail=NO_NAME),
+        _host(33, "verified", "OTTER9@CODE"),
+    ]
+
+    result = CliRunner().invoke(cli_group, ["name", *arguments])
+
+    assert result.exit_code == 1
+    assert f"Nothing named: {says}" in result.output
+    assert not _changes(fleet)
+
+
+@pytest.mark.parametrize("arguments", [[], ["31=OTTER4", "--all", "OTTER"], ["31=OTTER4", "--start", "3"], ["OTTER4"]])
+def test_name_says_how_it_is_used(fleet: _Fleet, arguments: list[str]) -> None:
+    """Before Fleet is asked anything"""
+    result = CliRunner().invoke(cli_group, ["name", *arguments])
+
+    assert result.exit_code == 2
+    assert not fleet.calls
+
+
+def test_renaming_a_phone_with_its_certificate_says_what_to_revoke(fleet: _Fleet) -> None:
+    """The old callsign stays valid in Deploy App until an admin revokes it there"""
+    fleet.hosts = [_host(31, "verified", "OTTER3")]
+
+    result = CliRunner().invoke(cli_group, ["name", "31=OTTER4"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == [
+        "Host 31 is OTTER4. It was OTTER3 and still has that certificate: revoke OTTER3 in Deploy App."
+    ]
+
+
+def test_renaming_a_refused_phone_says_nothing_to_revoke(fleet: _Fleet) -> None:
+    """A refused name was never issued to this phone, and may be another phone's"""
+    fleet.hosts = [_host(31, "failed", "OTTER3", REFUSED)]
+
+    result = CliRunner().invoke(cli_group, ["name", "31=OTTER4"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == ["Host 31 is OTTER4"]
+
+
+def test_name_without_a_certificate_template_says_so(fleet: _Fleet) -> None:
+    """Before a phone is named, so nothing is left half done"""
+    fleet.certificates = []
+    fleet.hosts = [_host(31, "failed", detail=NO_NAME)]
+
+    result = CliRunner().invoke(cli_group, ["name", "31=OTTER4"])
+
+    assert result.exit_code == 1
+    assert "no certificate template named rmscep: run apply first" in result.output
+    assert not _changes(fleet)
