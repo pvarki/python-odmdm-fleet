@@ -17,45 +17,61 @@ facing service.
 Enrolling phones
 ----------------
 
-Two Fleet teams: phones enrol into a preparation team and are named there, then move to the team
-that gets the certificate. Naming first means the first certificate request already carries the
-callsign.
+One Fleet team, the one with the certificate template. Phones enrol into it before anybody names
+them, and each gets its certificate once it has a name.
 
 1. Once per deployment, and whenever the template changes::
 
-       odmdm-fleet apply --team "Deploy App" --prep-team Preparation
+       odmdm-fleet apply
 
-2. Enrol a phone into the preparation team, then name it::
-
-       odmdm-fleet plan OTTER4
-
-   ``plan`` names the one phone in the preparation team that has no name yet. With two waiting it
-   names neither, because Fleet shows identical phones as identical rows and nothing tells you
-   which is the one in your hand. Enrol, plan, next phone.
-
-3. Open enrolment in Deploy App (**User management → MDM**) and give Fleet the new challenge. It
+2. Open enrolment in Deploy App (**User management → MDM**) and give Fleet the new challenge. It
    asks for it, and changes nothing else::
 
        odmdm-fleet challenge
 
-4. In Fleet, transfer the named phones to the ``Deploy App`` team. Each gets its certificate 7 to
-   20 minutes later and greets its callsign in Deploy App.
+3. Enrol phones into the ``Deploy App`` team, as many as you like, in any order.
 
-Close enrolment when the last phone is in. The next opening makes a new challenge, so step 3
-comes again before the next batch.
+4. Name them, all at once or a few at a time::
+
+       odmdm-fleet name --all OTTER           # OTTER1, OTTER2, ... in the order they enrolled
+       odmdm-fleet name 31=OTTER4 32=OTTER5   # host id = callsign, the ids being what phones prints
+
+   Each phone gets its certificate at its next check-in, within about 15 minutes, and greets its
+   callsign in Deploy App. ``phones`` shows where each one is. ``resend`` asks again for a refused
+   phone once the cause is fixed.
+
+Close enrolment once ``phones`` says every phone has its certificate: a request that arrives after
+it closes is refused. The next opening makes a new challenge, so step 2 comes again before the
+next batch.
+
+Without this tool, in Fleet: open the phone, **Edit user** to give it its callsign, then under
+**OS settings** pick the certificate and **Resend**. Naming alone does not send the request again.
+
+Phones already enrolled in another Fleet team: transfer them into this team in Fleet, then name
+them like the rest. Apps install only at enrolment, so a transferred phone gets its certificate but
+not this team's apps or launcher. For those, remove its work profile after the transfer and enrol
+it again into this team; see `The order that works`_.
 
 Commands
 --------
 
 .. code-block:: bash
 
-    odmdm-fleet apply              # state what devices need; --force-policy after one joins
-    odmdm-fleet apply --dry-run    # validate the template without touching Fleet
-    odmdm-fleet challenge          # give Fleet a new enrolment window's challenge, nothing else
-    odmdm-fleet plan CALLSIGN      # name the one phone waiting to be named
+    odmdm-fleet apply                     # state what devices need; --force-policy after one joins
+    odmdm-fleet apply --dry-run           # validate the template without touching Fleet
+    odmdm-fleet challenge                 # give Fleet a new window's challenge, nothing else
+    odmdm-fleet phones                    # each phone's host id, callsign, model and certificate
+    odmdm-fleet name 31=OTTER4 32=OTTER5  # name these phones, and Fleet sends their certificates
+    odmdm-fleet name --all OTTER          # the same for every phone without a name, numbered
+    odmdm-fleet resend [HOST_ID ...]      # ask again; without ids, every named phone that failed
 
-With a single team a phone enrols straight into the certificate team before anyone has named it,
-and that first request fails. Name it with ``plan --team``, then transfer it out and back.
+``name --all`` numbers in enrolment order from one above the highest ``OTTER<n>`` in the team, or
+from ``--start N``. It sees only this team's phones, and Deploy App never gives a callsign out
+twice: where callsigns were used by phones no longer in the team, give ``--start`` above the
+highest ever used. ``name`` changes nothing at all if a callsign is malformed, given twice or
+already another phone's, or if a host is not in the team. A phone that already has its certificate
+under the name is left alone. Renaming a phone that has its certificate says which old callsign to
+revoke.
 
 Configuration
 -------------
@@ -70,7 +86,7 @@ All configuration is via environment variables:
     global admin token, because Fleet keeps certificate authorities outside teams.
 
 ``ODMDM_FLEET_TEAM``
-    The team whose phones get the certificate. Default ``Deploy App``.
+    The team phones enrol into and get the certificate in. Default ``Deploy App``.
 
 ``ODMDM_FLEET_TEMPLATE``
     The document saying what to install, see below.
@@ -107,8 +123,8 @@ The order that works
 Three facts about managed Android pull against each other. Each was learned by getting it wrong.
 
 1. **Apps install at enrolment and at no other time.** The team must carry them before a phone
-   joins. So both teams carry the **same** launcher package: a transfer to a team with another
-   package uninstalls the launcher and never installs the other.
+   joins. A phone transferred in from a team with another launcher package loses that launcher
+   and never gets this one.
 2. **A profile is delivered when the profile changes, not when a phone arrives.** One uploaded
    before a phone joined is never sent to it, so a first enrolment needs ``--force-policy``.
 3. **A policy rewritten while apps are installing stops them installing.** Leave the phones alone
@@ -122,19 +138,22 @@ What Fleet does that you would not guess
   launcher and leaves the old one orphaned. Google refuses a title of 30 characters or more.
 - **A web app's display name is unique within a team** (409). A title in a team's setup experience
   has to be removed there before it can be removed from the team.
-- **A returning phone keeps its old team and its old name.** Transfer it to the preparation team
-  and rename it with ``odmdm-fleet plan NEWNAME --instead-of OLDNAME``, or it asks for a name that
-  is already taken. It can also come back as a new device with no name, so ``--instead-of`` refuses
-  while one is waiting: name that one with plain ``plan``.
+- **A phone enrols before it has a name**, so its first certificate request fails (``does not
+  have an IDP user``) until it is named, and naming it does not send the request again. ``name``
+  resends. A resend is one more attempt, which the phone acts on at its next check-in, every 15
+  minutes.
+- **A returning phone keeps its old team and its old name.** Transfer it into this team if it was
+  in another, and give it a new name with ``name``, or it asks for a name that is already taken. It
+  can also come back as a new device with no name.
 - **Renaming a phone that has its certificate gives it a second callsign.** Revoke the old one in
   Deploy App.
 - **Replacing a team's certificate template locks its phones out.** Every phone deletes the
   certificate it has and asks again, and the deployment refuses a name that is already taken. So
-  this repository never replaces one to retry a phone: a transfer out and back asks for that phone
-  alone.
+  this repository never replaces one to retry a phone: ``resend`` asks for that phone alone.
 - **A refusal shows only as** ``SCEP enrollment failed ... failInfo: badMessageCheck`` on the
   phone's certificate. Usually a bad or taken name, or Fleet still has the previous window's
-  challenge. Fix it, then transfer the phone out and back.
+  challenge. A taken name is never freed, not even by revoking it, so give the phone another with
+  ``name``. For the challenge, ``challenge`` and then ``resend``.
 
 Docker
 ------
