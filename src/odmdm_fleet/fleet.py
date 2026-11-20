@@ -375,53 +375,6 @@ class FleetMdm:
         """The devices in a team"""
         return self._call("GET", f"/api/latest/fleet/hosts?team_id={team}&per_page=500").get("hosts") or []
 
-    def _name_of(self, host_id: int) -> str:
-        """The name a host was given, or empty if nobody has named it"""
-        mapping = self._call("GET", f"/api/latest/fleet/hosts/{host_id}/device_mapping").get("device_mapping") or []
-        return next((str(entry["email"]) for entry in mapping if entry.get("email")), "")
-
-    def name_the_waiting_host(self, team: int, callsign: str) -> int:
-        """Give the one unnamed host in the team its callsign
-
-        Identical phones look identical here: brand and model, and an enrolment ID that nothing on
-        the phone shows. So the only host that can be named safely is the only one waiting. With
-        two waiting nobody can tell which is the phone in hand, and guessing puts the callsign on
-        somebody else's phone, so that is refused rather than picked.
-        """
-        waiting = [int(host["id"]) for host in self._hosts(team) if not self._name_of(int(host["id"]))]
-        if not waiting:
-            raise FleetError(f"no device in team {team} is waiting for a name: enrol the phone first")
-        if len(waiting) > 1:
-            raise FleetError(f"{len(waiting)} devices in team {team} wait for a name, so none was: enrol one at a time")
-        self._call("PUT", f"/api/latest/fleet/hosts/{waiting[0]}/device_mapping", {"email": callsign, "source": "idp"})
-        LOGGER.info("Named host %s %s", waiting[0], callsign)
-        return waiting[0]
-
-    def rename_host(self, team: int, old: str, callsign: str) -> int:
-        """Give the host in the team now called `old` a new callsign
-
-        A phone that comes back after a wipe keeps the name it had, so it is not waiting to be
-        named and name_the_waiting_host cannot reach it. Its old name is what tells it apart.
-        Names are compared without case, as the deployment compares callsigns.
-
-        A phone can also come back as a new host, and then the old name finds a row nothing is
-        using. Fleet shows no difference between them, so this is refused while any device waits
-        for a name: that one may be the phone in hand.
-        """
-        names = {int(host["id"]): self._name_of(int(host["id"])) for host in self._hosts(team)}
-        waiting = [host for host, name in names.items() if not name]
-        if waiting:
-            raise FleetError(
-                f"{len(waiting)} devices in team {team} wait for a name, so none was renamed: a phone can come "
-                "back as a new device. Name that one with plan and no --instead-of"
-            )
-        called = [host for host, name in names.items() if name.lower() == old.lower()]
-        if len(called) != 1:
-            raise FleetError(f"{len(called)} devices in team {team} are called {old}, so none was renamed")
-        self._call("PUT", f"/api/latest/fleet/hosts/{called[0]}/device_mapping", {"email": callsign, "source": "idp"})
-        LOGGER.info("Renamed host %s from %s to %s", called[0], old, callsign)
-        return called[0]
-
     # --- the whole statement --------------------------------------------------
 
     def apply(

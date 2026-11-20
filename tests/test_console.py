@@ -13,7 +13,7 @@ from click.testing import CliRunner
 from odmdm_fleet import config
 from odmdm_fleet.console import cli_group
 
-from .test_fleet import _Fleet, _host, _mdm
+from .test_fleet import _Fleet, _mdm
 
 
 @pytest.fixture
@@ -27,56 +27,6 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Fleet:
     stub = _Fleet()
     _mdm(stub, monkeypatch)
     return stub
-
-
-@pytest.mark.parametrize("callsign", ["OT", "OTTER-", "OTTER_1", "X" * 33])
-def test_plan_refuses_a_callsign_the_deployment_would(callsign: str) -> None:
-    """Now, rather than as a failed certificate twenty minutes later, and before Fleet is touched"""
-    result = CliRunner().invoke(cli_group, ["plan", callsign])
-
-    assert result.exit_code == 1
-    assert "3-32 letters" in result.output
-
-
-def test_plan_names_the_waiting_phone(fleet: _Fleet) -> None:
-    """The one in your hand is the only one waiting"""
-    fleet.hosts = [_host(4, "failed", named=False)]
-
-    result = CliRunner().invoke(cli_group, ["plan", "OTTER4"])
-
-    assert result.exit_code == 0, result.output
-    assert "Host 4 is OTTER4" in result.output
-    assert fleet.hosts[0]["device_mapping"][0]["email"] == "OTTER4"
-
-
-def test_plan_renames_a_returning_phone(fleet: _Fleet) -> None:
-    """Named before the wipe, so the old name is how the operator points at it"""
-    fleet.hosts = [_host(4, "failed", named=True)]
-
-    result = CliRunner().invoke(cli_group, ["plan", "KETTU4", "--instead-of", "OTTER1@CODE"])
-
-    assert result.exit_code == 0, result.output
-    assert fleet.hosts[0]["device_mapping"][0]["email"] == "KETTU4"
-
-
-def test_plan_says_why_it_named_nobody(fleet: _Fleet) -> None:
-    """Two phones waiting: the operator learns to enrol them one at a time"""
-    fleet.hosts = [_host(4, "failed", named=False), _host(5, "failed", named=False)]
-
-    result = CliRunner().invoke(cli_group, ["plan", "OTTER4"])
-
-    assert result.exit_code == 1
-    assert "one at a time" in result.output
-
-
-def test_plan_needs_somewhere_to_send_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No Fleet configured is a sentence, not a traceback"""
-    monkeypatch.setattr(config, "URL", "")
-
-    result = CliRunner().invoke(cli_group, ["plan", "OTTER4"])
-
-    assert result.exit_code == 1
-    assert "ODMDM_FLEET_URL" in result.output
 
 
 @pytest.mark.parametrize("command", [["apply"], ["challenge", "--challenge", "new-window"]])
