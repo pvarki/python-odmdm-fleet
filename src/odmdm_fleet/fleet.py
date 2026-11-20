@@ -139,11 +139,17 @@ class FleetMdm:
 
     # --- scopes ---------------------------------------------------------------
 
-    def team_id(self, name: str) -> int:
-        """The team by name, created if it is not there yet"""
+    def team_id(self, name: str, create: bool = False) -> int:
+        """The team by name
+
+        Only apply creates a team that is not there. Anywhere else an unknown name is a typo, and
+        must not leave a team behind.
+        """
         for team in self._call("GET", "/api/latest/fleet/teams").get("teams", []):
             if team.get("name") == name:
                 return int(team["id"])
+        if not create:
+            raise FleetError(f"no team named {name}: check --team or ODMDM_FLEET_TEAM")
         created = self._call("POST", "/api/latest/fleet/teams", {"name": name})
         team = created.get("team", created)
         LOGGER.info("Created team %s", name)
@@ -502,7 +508,7 @@ class FleetMdm:
         nothing typed into Fleet by hand. Without it the authority must already be there, which
         is the case for an MDM we cannot create one in.
         """
-        team = self.team_id(team_name)
+        team = self.team_id(team_name, create=True)
         if template.certificate:
             if scep_url:
                 self.ensure_authority(template.certificate.authority, scep_url, challenge)

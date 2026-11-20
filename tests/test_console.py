@@ -395,3 +395,15 @@ def test_resend_says_when_it_sends_nothing(fleet: _Fleet, arguments: list[str], 
     assert result.exit_code == code, result.output
     assert says in result.output
     assert not _changes(fleet)
+
+
+@pytest.mark.parametrize("command", [["phones"], ["name", "31=OTTER4"], ["resend"]])
+def test_an_unknown_team_is_named_not_created(fleet: _Fleet, command: list[str]) -> None:
+    """A typo must not leave an empty team behind for the next phone to enrol into"""
+    fleet.hosts = [_host(31, "failed", detail=NO_NAME)]
+
+    result = CliRunner().invoke(cli_group, [*command, "--team", "Typo"])
+
+    assert result.exit_code == 1
+    assert "no team named Typo" in result.output
+    assert not _changes(fleet)
