@@ -23,9 +23,6 @@ TOKEN_FILE: Path | None = Path(_env("TOKEN_FILE")) if _env("TOKEN_FILE") else No
 #: The team whose devices get the deployment's certificate
 TEAM: str = _env("TEAM", "Deploy App")
 
-#: The team devices enrol into and are named in before they move to TEAM. Empty for none.
-PREP_TEAM: str = _env("PREP_TEAM")
-
 #: What this deployment wants installed, as a document. See odmdm_fleet.template.
 TEMPLATE: Path | None = Path(_env("TEMPLATE")) if _env("TEMPLATE") else None
 

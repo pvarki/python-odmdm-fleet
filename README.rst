@@ -72,9 +72,6 @@ All configuration is via environment variables:
 ``ODMDM_FLEET_TEAM``
     The team whose phones get the certificate. Default ``Deploy App``.
 
-``ODMDM_FLEET_PREP_TEAM``
-    The team phones enrol into and are named in. Empty for a single team.
-
 ``ODMDM_FLEET_TEMPLATE``
     The document saying what to install, see below.
 

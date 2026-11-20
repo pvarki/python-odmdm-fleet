@@ -77,11 +77,6 @@ def _template(ctx: click.Context, path: str | None, domain: str | None) -> templ
 @click.option("--template", "path", default=None, help="What to install (default: ODMDM_FLEET_TEMPLATE)")
 @click.option("--fleet-url", default=None, help="Base URL of Fleet's API (default: ODMDM_FLEET_URL)")
 @click.option("--team", default=None, help="The team devices get the certificate in (default: ODMDM_FLEET_TEAM)")
-@click.option(
-    "--prep-team",
-    default=None,
-    help="Also set up this team, where devices enrol and are named first (default: ODMDM_FLEET_PREP_TEAM)",
-)
 @click.option("--domain", default=None, help="The deployment's DNS name (default: ODMDM_FLEET_DOMAIN)")
 @click.option(
     "--force-policy", is_flag=True, help="Re-upload the policy even if unchanged, to reach a host that just joined"
@@ -92,7 +87,6 @@ def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     path: str | None,
     fleet_url: str | None,
     team: str | None,
-    prep_team: str | None,
     domain: str | None,
     force_policy: bool,
     dry_run: bool,
@@ -122,7 +116,6 @@ def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     fleet = _fleet(ctx, fleet_url)
     if not fleet:
         return
-    the_prep_team = prep_team or config.PREP_TEAM
     try:
         result = fleet.apply(
             team or config.TEAM,
@@ -131,15 +124,11 @@ def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
             scep_url=f"https://{domain or config.DOMAIN}/scep",
             challenge=config.CHALLENGE,
         )
-        if the_prep_team:
-            prep = fleet.apply_preparation(the_prep_team, wanted, result["link"], force_policy=force_policy)
     except FleetError as exc:
         click.echo(f"Fleet refused: {exc}", err=True)
         ctx.exit(1)
         return
     click.echo(f"Applied to team {result['team_id']}: {len(result['assigned'])} apps assigned")
-    if the_prep_team:
-        click.echo(f"Applied to preparation team {prep['team_id']}: the same apps and launcher, no certificate")
     ctx.exit(0)
 
 
@@ -192,7 +181,7 @@ def challenge(  # pylint: disable=too-many-arguments,too-many-positional-argumen
 @click.option(
     "--team",
     default=None,
-    help="The team the device waits in (default: ODMDM_FLEET_PREP_TEAM, else ODMDM_FLEET_TEAM)",
+    help="The team the device waits in (default: ODMDM_FLEET_TEAM)",
 )
 @click.option("--instead-of", "old", default=None, help="Rename the device now called this, such as a returning phone")
 def plan(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -215,7 +204,7 @@ def plan(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     if not fleet:
         return
     try:
-        team_id = fleet.team_id(team or config.PREP_TEAM or config.TEAM)
+        team_id = fleet.team_id(team or config.TEAM)
         if old:
             host = fleet.rename_host(team_id, old, callsign)
         else:

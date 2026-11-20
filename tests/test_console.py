@@ -18,12 +18,12 @@ from .test_fleet import _Fleet, _host, _mdm
 
 @pytest.fixture
 def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Fleet:
-    """A configured connector talking to a stubbed Fleet whose preparation team is "prep" """
+    """A configured connector talking to a stubbed Fleet whose team is "rmscep" """
     token = tmp_path / "token"
     token.write_text("token\n", encoding="utf-8")
     monkeypatch.setattr(config, "URL", "https://mdm.test")
     monkeypatch.setattr(config, "TOKEN_FILE", token)
-    monkeypatch.setattr(config, "PREP_TEAM", "prep")
+    monkeypatch.setattr(config, "TEAM", "rmscep")
     stub = _Fleet()
     _mdm(stub, monkeypatch)
     return stub
@@ -106,18 +106,15 @@ def _template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "DOMAIN", "example.fi")
 
 
-def test_apply_states_the_template_to_both_teams(
-    fleet: _Fleet, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The certificate team gets the certificate, the preparation team everything else"""
+def test_apply_states_the_template(fleet: _Fleet, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One team: phones enrol into the team that has the certificate template"""
     _template(tmp_path, monkeypatch)
     monkeypatch.setattr(config, "CHALLENGE", "new-window")
 
-    result = CliRunner().invoke(cli_group, ["apply", "--team", "rmscep"])
+    result = CliRunner().invoke(cli_group, ["apply"])
 
     assert result.exit_code == 0, result.output
     assert "Applied to team 7" in result.output
-    assert "Applied to preparation team 8" in result.output
     assert fleet.authorities[0]["challenge"] == "new-window"
     assert fleet.authorities[0]["url"] == "https://example.fi/scep"
 
