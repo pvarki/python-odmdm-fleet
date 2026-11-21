@@ -6,13 +6,14 @@ to say why, rather than end in a traceback.
 
 import datetime
 import json
+from importlib.metadata import EntryPoint
 from pathlib import Path
 
 import httpx
 import pytest
 from click.testing import CliRunner
 
-from odmdm_connector import config, console
+from odmdm_connector import config, console, plugins
 from odmdm_connector import fleet as fleet_module
 from odmdm_connector.console import cli_group
 from odmdm_connector.fleet_plugin import FleetPlugin
@@ -838,3 +839,73 @@ def test_a_dry_run_needs_no_mdm(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines()[0] == "Template names 3 apps, 3 installed at enrolment"
     assert result.stdout.splitlines()[-1] == "  launcher link 'Deploy App' -> https://mtls.example.fi/"
+
+
+def _declare(monkeypatch: pytest.MonkeyPatch, *found: tuple[str, str, str]) -> None:
+    """These MDMs installed and no other, each as name, package and module:class"""
+    declared = [
+        plugins.Plugin(name, package, "0.1.0", EntryPoint(name, value, plugins.GROUP)) for name, package, value in found
+    ]
+    monkeypatch.setattr(plugins, "_declared", lambda: declared)
+
+
+FAKE = ("fake", "odmdm-connector-fake", "odmdm_connector.testing.fake:FakeMdm")
+
+
+def test_mdms_lists_what_is_installed_without_loading_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    _declare(
+        monkeypatch,
+        ("zeta", "odmdm-connector-zeta", "never_imported:Mdm"),
+        ("fleet", "odmdm-connector", "odmdm_connector.never_imported:Mdm"),
+    )
+
+    result = CliRunner().invoke(cli_group, ["mdms"])
+
+    assert result.exit_code == 0, result.output
+    assert [line.split() for line in result.stdout.splitlines()] == [
+        ["fleet", "odmdm-connector", "0.1.0", "built", "in"],
+        ["zeta", "odmdm-connector-zeta", "0.1.0", "plugin"],
+    ]
+
+
+def test_a_plugin_says_whose_code_it_is_before_it_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On stderr, so what the command prints stays the same"""
+    _declare(monkeypatch, FAKE)
+
+    result = CliRunner().invoke(cli_group, ["--mdm", "fake", "phones"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stderr == "The MDM fake is a plugin from odmdm-connector-fake 0.1.0: code that sees the MDM token\n"
+    assert [line.split()[:2] for line in result.stdout.splitlines()] == [["a1", "-"], ["a2", "-"], ["a3", "OTTER1"]]
+
+
+def test_the_built_in_mdm_says_nothing_of_itself(fleet: _Fleet) -> None:
+    fleet.hosts = [_host(31)]
+
+    result = CliRunner().invoke(cli_group, ["phones"])
+
+    assert result.exit_code == 0, result.output
+    assert not result.stderr
+
+
+@pytest.mark.parametrize(
+    ("found", "command", "says"),
+    [
+        ([FAKE, ("fake", "odmdm-connector-other", "never_imported:Mdm")], ["mdms"], "odmdm-connector-fake 0.1.0 and"),
+        ([FAKE, ("fake", "odmdm-connector-other", "never_imported:Mdm")], ["--mdm", "fake", "phones"], "Uninstall one"),
+        (
+            [("old", "odmdm-connector-old", "tests.test_plugins:Old")],
+            ["--mdm", "old", "phones"],
+            "speaks MDM API version 2",
+        ),
+    ],
+)
+def test_a_plugin_the_connector_cannot_use_is_said(
+    monkeypatch: pytest.MonkeyPatch, found: list[tuple[str, str, str]], command: list[str], says: str
+) -> None:
+    _declare(monkeypatch, *found)
+
+    result = CliRunner().invoke(cli_group, command)
+
+    assert result.exit_code == 1
+    assert says in result.stderr

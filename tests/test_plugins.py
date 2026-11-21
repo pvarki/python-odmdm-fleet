@@ -45,7 +45,11 @@ def test_fleet_is_registered_as_a_plugin_would_be() -> None:
 
 def test_listing_imports_no_plugin(declared: list[plugins.Plugin]) -> None:
     """Built-in first, then by name"""
-    declared += [_plugin("zeta", NEVER), _plugin("demo", NEVER), _plugin("fleet", NEVER, "odmdm_connector", "1.1.0")]
+    declared += [
+        _plugin("zeta", NEVER),
+        _plugin("demo", NEVER),
+        _plugin("fleet", "odmdm_connector.never_imported:Mdm", "odmdm_connector", "1.1.0"),
+    ]
 
     found = plugins.installed()
 
@@ -93,3 +97,10 @@ def test_a_class_declaring_too_little_is_refused(declared: list[plugins.Plugin])
     assert str(raised.value) == (
         "The MDM bare from odmdm-connector-demo 1.0.0 does not declare title, fields, missing, so it cannot be used"
     )
+
+
+def test_built_in_means_the_connectors_own_code_too() -> None:
+    """The connector's distribution name on an entry point outside its package is no proof"""
+    assert not _plugin("odd", NEVER, "odmdm-connector", "1.1.0").built_in
+    assert not _plugin("odd", "odmdm_connector_x.mdm:Mdm", "odmdm-connector", "1.1.0").built_in
+    assert _plugin("fleet", "odmdm_connector:Mdm", "odmdm-connector", "1.1.0").built_in

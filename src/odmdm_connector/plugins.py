@@ -38,8 +38,11 @@ class Plugin:
 
     @property
     def built_in(self) -> bool:
-        """Whether it comes with the connector itself"""
-        return re.sub(r"[-_.]+", "-", self.package).lower() == CONNECTOR
+        """Whether it comes with the connector itself: declared by it, and code of its own package"""
+        module = self.entry.module
+        return re.sub(r"[-_.]+", "-", self.package).lower() == CONNECTOR and (
+            module == __package__ or module.startswith(f"{__package__}.")
+        )
 
 
 def _declared() -> list[Plugin]:

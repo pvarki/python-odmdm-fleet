@@ -1,14 +1,14 @@
 """CLI entrypoints for odmdm-connector
 
-Knows the MDM only through the contract in mdm.py: the chosen MDM is the one entry point of the
-group odmdm_connector.mdm named by --mdm, Fleet being the one built in.
+Knows the MDM only through the contract in mdm.py, and gets it only through plugins.load: the
+chosen MDM is the one entry point of the group odmdm_connector.mdm named by --mdm, Fleet being the
+one built in.
 """
 
 import datetime
 import logging
 import os
 from collections.abc import Mapping
-from importlib.metadata import entry_points
 from pathlib import Path
 from typing import NoReturn
 from urllib.parse import urlparse
@@ -18,14 +18,11 @@ from libadvian.logging import init_logging
 
 from odmdm_connector import __version__
 
-from . import config, core, settings
+from . import config, core, plugins, settings
 from .mdm import ASK_AGAIN, SET_CHALLENGE, SETUP, Field, Mdm, MdmError
 from .settings import Settings
 
 LOGGER = logging.getLogger(__name__)
-
-#: Where MDM plugins are found, the built-in one among them
-GROUP = "odmdm_connector.mdm"
 
 
 @click.group()
@@ -78,13 +75,20 @@ def _fail(ctx: click.Context, message: str) -> NoReturn:
     ctx.exit(1)
 
 
-def _chosen(name: str) -> type[Mdm]:
-    """The class of the MDM of that name, loading that one entry point and no other"""
-    found = entry_points(group=GROUP, name=name)
-    if not found:
-        raise click.UsageError(f"No MDM named {name} is installed")
-    loaded: type[Mdm] = next(iter(found)).load()
-    return loaded
+def _chosen(ctx: click.Context, name: str) -> type[Mdm]:
+    """The class of the MDM of that name, saying first whose code it is when it is not built in"""
+    try:
+        plugin = plugins.find(name)
+        if not plugin.built_in:
+            click.echo(
+                f"The MDM {name} is a plugin from {plugin.package} {plugin.version}: code that sees the MDM token",
+                err=True,
+            )
+        return plugins.load(name)
+    except plugins.NotInstalled as exc:
+        raise click.UsageError(str(exc)) from exc
+    except plugins.PluginError as exc:
+        _fail(ctx, str(exc))
 
 
 def _values(name: str, fields: tuple[Field, ...], given: Mapping[str, str]) -> dict[str, str]:
@@ -116,7 +120,7 @@ def _mdm(ctx: click.Context, capability: str = "", **shorthands: str | None) -> 
     The shorthands are the per-command options such as --team, each the same as --set team=...
     """
     name = str(ctx.obj["mdm"])
-    chosen = _chosen(name)
+    chosen = _chosen(ctx, name)
     if capability in chosen.missing:
         _fail(ctx, chosen.missing[capability])
     given = {**ctx.obj["set"], **{key: value for key, value in shorthands.items() if value is not None}}
@@ -364,4 +368,21 @@ def resend(ctx: click.Context, ids: tuple[str, ...], mdm_url: str | None, team: 
         click.echo(line)
     if not lines:
         click.echo("Nothing to resend")
+    ctx.exit(0)
+
+
+@cli_group.command(name="mdms")
+@click.pass_context
+def mdms(ctx: click.Context) -> None:
+    """List the MDMs installed: the name --mdm takes, the package and its version, built in or a plugin
+
+    Lists them without loading any. A plugin is code that sees the MDM token: install only one you trust.
+    """
+    try:
+        found = plugins.installed()
+    except plugins.PluginError as exc:
+        _fail(ctx, str(exc))
+    for plugin in found:
+        kind = "built in" if plugin.built_in else "plugin"
+        click.echo(f"{plugin.name:<12} {plugin.package:<28} {plugin.version:<16} {kind}")
     ctx.exit(0)
