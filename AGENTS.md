@@ -28,6 +28,14 @@ The command line knows an MDM only through one contract; Fleet is the plugin bui
   The repository runs the checks against the fake, Fleet over the stub, and the demo.
 - `examples/odmdm-connector-demo/`: a plugin as a package of its own. CI builds it and the
   connector and installs both as an operator would.
+- `packaging/`: the self-contained file per system that Deploy App's MDM page offers. `build.py`
+  runs PyInstaller, a build tool in the `dist` dependency group only, on `launcher.py` and packs the
+  result; `manifest.py DIR` writes `DIR/connector.json`, the contract with Deploy App's UI (its
+  test: `tests/test_manifest.py`). The file names, `os`, `arch` and the order are that contract:
+  change them only together with Deploy App. Started without a command, the connector does what
+  `web` does, as a downloaded file is started by a double-click. CI builds every file with uv's own
+  Python (`UV_PYTHON_PREFERENCE=only-managed`), one known build on every system instead of each
+  runner's, and the Linux file in AlmaLinux 8, as it needs the glibc it was built on or newer.
 - `fleet_plugin.py`: Fleet behind the contract, registered in `pyproject.toml` as `fleet`. `fleet.py`:
   Fleet's HTTP dialect. `template.py` and the shipped `template.json`: what a deployment's phones need.
 
@@ -52,12 +60,17 @@ desktop (no `DISPLAY` or `WAYLAND_DISPLAY` outside Windows and macOS) it opens n
 `webbrowser` would start a text browser in the terminal. Tests replace the opener with a fake;
 `conftest.py` still makes `webbrowser.open` raise in every test.
 
+The self-contained file of `packaging/` is PyInstaller's one-file mode: its bootloader, not the
+connector's code, unpacks Python and the package into a new temporary folder and runs them as a
+child process of itself, which it removes again when the connector stops. Nothing of the
+connector's code changes for it, and every rule above holds inside it.
+
 ## One dependency: keyring, for the token
 
 Runtime code under `src/` imports nothing but Python's standard library and the package itself,
 with one exception: `store.py` imports keyring, inside `platform_backend()`, to keep the MDM token in
 the system's keychain. Nothing else uses keyring, and the connector must run without it: the
-one-file build leaves it out, and there `platform_backend()` is None and the token is held until the
+one-file Python build (`.pyz`) leaves it out, and there `platform_backend()` is None and the token is held until the
 connector stops. `tests/test_standard_library.py` fails on any other import, and on keyring anywhere
 but there; CI runs the one file without it. The owner decided on 2026-11-21 first that the connector
 goes into a network without internet as one file with no dependencies (README.rst, "Into a network
@@ -130,7 +143,7 @@ giving callsigns, one phone, the settings and removing a Deploy App. Keep these 
 - Known limits: the button in Deploy App talks to whatever listens on port 8737 of this computer,
   so on a computer shared with other users the settings line is copied by hand instead. Another
   program on this computer can slow the page down, but cannot read or drive it without the key.
-- `web` opens the page in the default browser through `browser.py` only, and prints the address;
+- `web`, or no command at all, opens the page in the default browser through `browser.py` only, and prints the address;
   `--no-browser` only prints it. The address is printed first and the browser asked from a daemon
   thread as the page starts to serve, since some openers wait for the browser or never return. Deploy App's button finds the page only in the browser where the
   address was opened.
@@ -153,6 +166,7 @@ strands every enrolled phone's key.
   and no phone.
 - Hooks, before every commit: `uv run prek run --all-files`. Once per clone:
   `uv run prek install --hook-type pre-commit --hook-type commit-msg`
+- Self-contained file for this computer: `uv run --locked --group dist python packaging/build.py`
 - Version bump, once per pull request, in its own commit: `uv run bump-my-version bump patch|minor|major`
 
 ## Crown jewels
