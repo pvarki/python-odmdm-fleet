@@ -2,7 +2,7 @@
 odmdm-connector
 ===============
 
-Connects FleetDM to an OpenDefence deployment's device enrolment.
+Connects an MDM, FleetDM built in, to an OpenDefence deployment's device enrolment.
 
 The deployment knows no MDM. It answers standard SCEP (RFC 8894) at ``https://<domain>/scep``,
 asks for a challenge that is new every time an admin opens enrolment in Deploy App, and makes the
@@ -23,7 +23,123 @@ installed too::
     uv tool install git+https://github.com/pvarki/python-odmdm-fleet
     odmdm-connector --help
 
-From a checkout, ``uv tool install .`` does the same.
+From a checkout, ``uv tool install .`` does the same. Installed this way it brings its one
+dependency, keyring, which keeps the MDM token in this computer's keychain: Windows Credential
+Manager, the macOS Keychain, or the Secret Service on Linux.
+
+The page
+--------
+
+The connector's everyday face is a page in your browser, served by this computer. Start it, and
+open the address it prints::
+
+    odmdm-connector web
+
+It goes on until Ctrl+C. ``--port N`` serves it on another port than 8737. The connector starts no
+browser: open the address yourself. A page opened without it says so, and goes on by itself once the
+address has been opened in the same browser.
+
+The first time, the page sets up one thing at a time, on cards under a bar of three parts: Deploy
+App, the MDM, Connect. Have at hand Deploy App's MDM page, open as an admin, your MDM's address and
+an API token for it. Add the Deploy App: on its MDM page press **Open in the MDM connector**, or
+copy its settings line and paste it into the page, and confirm it. Choose the MDM when more than one
+is installed, then fill in what it asks, one field to a card: for Fleet its address, an API token
+and the team, with the rarely changed ones under **More settings**. **Connect** sets the MDM up and
+ticks off its steps; it says what is left to do by hand, if anything, or why it failed, and **Show
+the phones** goes on.
+
+The daily work is one view of the phones, as wide as the window. At the top, whether Deploy App
+accepts phones now and until when; once enrolment has closed, **Open Deploy App** opens its MDM page
+in a new tab. Under it one row of buttons, the ways to select, and the table: each phone's ID,
+callsign, model, when it joined and where its certificate is. Click a row to select it, and
+double-click it, or select one and press **Details**, to see that phone alone. The line at the
+bottom says what was done last and, at its right end, when the phones were last listed: every
+minute while the page is open, or at once with **Refresh**. **Settings** shows the MDM's
+settings, whether its token is kept on this computer, and where the log is. The Deploy App's name
+at the top right lists the Deploy Apps added, opens another, adds one or removes the one open.
+Each Deploy App needs a Fleet of its own: the shipped template names one certificate
+authority for every Deploy App, and the connector refuses to point an authority that serves one
+Deploy App at another.
+
+For every batch: open enrolment in Deploy App and press **Open in the MDM connector** again, or
+**New settings** and paste the line, so the MDM gets the new challenge. Let the phones enrol, then
+**Give callsigns**, to the phones selected or else to every phone waiting for a name: numbered or
+from a list. The preview below follows what you type, and **Name** names exactly the preview
+shown, once it has passed. **Ask again** asks refused or failed phones for their certificates
+again once the cause is fixed.
+
+The MDM token is never in the settings file, the log or the page. With **Remember on this
+computer** ticked, as it is at first, it is kept in this computer's keychain, under
+``odmdm-connector``, and the page connects to the MDM at the next start without asking for it.
+Without a keychain, as in the one file, the page says the token is kept only until the connector
+stops, and asks for it after a restart: then it shows the phones of the MDM set up before, without
+new settings from Deploy App. It asks for it the same way, with the MDM's reason, when the MDM no
+longer accepts it, and removes the copy kept.
+
+To stop keeping the token on this computer, connect again with **Remember on this computer**
+unticked, or remove the Deploy App: either removes it from the keychain. If the keychain does not
+let it be removed, the page says so: delete the ``odmdm-connector`` item of that Deploy App there by
+hand.
+
+What guards the page:
+
+- It listens on this computer only (127.0.0.1), and answers only a request addressed to this
+  computer (its Host header), so that a web page elsewhere cannot reach it through DNS rebinding.
+- Its three files are public code. Everything else answers only a page that carries the key the
+  address printed at start holds, new at every start. The key is in the address's fragment, after
+  ``#``, which a browser sends to no server. The page takes it out of the address, keeps it only
+  once the connector accepts it, so that a page elsewhere cannot put a wrong one in its place, and
+  sends it with each request in a header of its own, never in a cookie, which a browser would also send to every
+  other program listening on this computer.
+- The browser keeps exactly one thing, that key, in the page's own storage, so that every tab of
+  the page has it. It is worthless once the connector stops. Nothing else is ever kept there. The
+  browser's history also keeps the address you opened, key and all; that matters only while the
+  connector runs, as the next start makes a new key.
+- A request that changes something must come from the page itself (its Origin header).
+- **Open in the MDM connector** opens the page and hands it the settings line in a message, never in
+  the address. The page takes a line only from the page that opened it, and the connector only from
+  that Deploy App's own pages, ``https://<host>`` or ``https://mtls.<host>``.
+
+Its limits:
+
+- The button in Deploy App talks to whatever listens on port 8737 of this computer. On a computer
+  that other users share, one of them could listen there first and take the settings line: copy the
+  line by hand instead. A program that listens on port 8737 while the connector is not running can
+  also send the Deploy App tab that opened it elsewhere.
+- Any web page can open the connector and offer a Deploy App of its own: read the Deploy App's name
+  on the confirm card before pressing **Add**.
+- Another program on this computer can slow the page down, but without the key it can neither read
+  nor drive it. A program that runs as you can read the key from your browser's storage, as it can
+  read anything else of yours.
+
+Into a network without internet
+-------------------------------
+
+The connector runs on Python's standard library alone, so it can be carried in as one file. On the
+other computer it needs Python 3.11 or newer, and nothing else. The file leaves keyring out, so it
+has no keychain: the MDM token is asked for at each start, and kept only until the connector stops.
+
+Build the file from a checkout, on a computer that has uv. The wheel goes into the file whole, with
+its metadata, which is how the connector finds Fleet and any plugin::
+
+    uv build --wheel --out-dir dist
+    uv pip install --target build/pyz --no-deps dist/odmdm_connector-*.whl
+    python3 -m zipapp build/pyz -m "odmdm_connector.console:odmdm_connector_cli" -p "/usr/bin/env python3" -o dist/odmdm-connector.pyz
+
+A plugin goes into the same file: build its wheel and name it in the same install line, after the
+connector's. Start from an empty ``build/pyz`` each time, or what was installed there before stays in
+the file.
+
+Copy ``dist/odmdm-connector.pyz`` across and run it as the command, ``py`` in place of ``python3`` on
+Windows::
+
+    python3 odmdm-connector.pyz --version
+    python3 odmdm-connector.pyz mdms
+    python3 odmdm-connector.pyz web
+
+An MDM whose certificate comes from a private authority is trusted by pointing the
+``SSL_CERT_FILE`` environment variable at that authority's certificate file, in PEM form, before
+the connector starts.
 
 Enrolling phones
 ----------------
@@ -156,10 +272,15 @@ in the package, is a working one for Deploy App, with its reasoning in the comme
 
 The certificate subject is the contract with the deployment. Its common name becomes the callsign:
 3 to 32 letters, digits or hyphens, no hyphen at either end. It is the name ``name`` gives the
-phone, optionally followed by Fleet's id for the host, and the tool refuses any other::
+phone, followed by Fleet's id for the host, and the tool refuses any other::
 
-    CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART
     CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART, OU=$FLEET_VAR_HOST_UUID
+    CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART
+
+The shipped template uses the first: the id lets the deployment tell later which device a callsign
+was issued to. A subject cannot change on a team that has phones, since replacing the certificate
+template removes every phone's certificate, so a team set up without the id keeps the second form
+in a template of its own.
 
 A name the phone supplies, such as its serial number, would make a leaked enrolment link enough
 for an identity.
@@ -178,17 +299,20 @@ separated by whitespace::
     ODMDM1 https://unit.example.fi/scep 0123456789abcdef0123456789abcdef 2026-11-21T14:00:00Z
 
 1. The mark ``ODMDM1``.
-2. The SCEP URL. It must be https.
+2. The SCEP URL, ``https://<host>/<path>`` and nothing else: no user name, password, port, query,
+   fragment or backslash. Deploy App writes ``https://<host>/scep``.
 3. The challenge: 32 lowercase hex characters. It is a secret, and the tool never prints or logs it.
 4. When the enrolment window closes, in UTC, as ``YYYY-MM-DDTHH:MM:SSZ``.
 
 Whitespace and line breaks before and after the line are ignored. A line with another mark or
-another number of fields, a URL that is not https, a malformed challenge or time, or a window that
-has already closed is refused. A value with whitespace inside it is read as a line, never as a
-bare challenge, so a damaged paste is refused instead of being sent to Fleet. ``challenge`` takes
-the line at its prompt, from ``--challenge`` or from ``ODMDM_CHALLENGE``, refuses one whose SCEP
-URL is not on ``ODMDM_DOMAIN``, and says until when the window is open. The line above is the
-shared test vector, in ``tests/data/settings-line-v1.txt``.
+another number of fields, a URL that is not just https, a host and a path, a malformed challenge or
+time, or a window that has already closed is refused. A line that a page hands to the connector is
+taken only from that Deploy App's own pages, ``https://<host>`` or ``https://mtls.<host>``; one
+typed or pasted by hand names no page. A value with whitespace inside it is read as a line, never
+as a bare challenge, so a damaged paste is refused instead of being sent to Fleet. ``challenge``
+takes the line from ``ODMDM_CHALLENGE``, else at its hidden prompt, never as an argument; it refuses
+one whose SCEP URL is not on ``ODMDM_DOMAIN``, and says until when the window is open, in this
+computer's time. The line above is the shared test vector, in ``tests/data/settings-line-v1.txt``.
 
 The order that works
 --------------------
@@ -217,6 +341,10 @@ What Fleet does that you would not guess
   launcher and leaves the old one orphaned. Google refuses a title of 30 characters or more.
 - **A web app's display name is unique within a team** (409). A title in a team's setup experience
   has to be removed there before it can be removed from the team.
+- **A token copied from a signed-in account ends with that sign-in.** **My account → Get API token**
+  gives the token of your own session, which Fleet ends after five days by default, or when you
+  sign out. The connector then says the token is not accepted. For a connector that stays set up,
+  give the token of an API-only user (``fleetctl user create --api-only``), which does not end.
 - **A phone enrols before it has a name**, so its first certificate request fails (``does not
   have an IDP user``) until it is named, and naming it does not send the request again. ``name``
   resends. A resend is one more attempt, which the phone acts on at its next check-in, every 15
@@ -245,15 +373,20 @@ A plugin is one class that satisfies ``Mdm`` in ``src/odmdm_connector/mdm.py``, 
 library only:
 
 - ``API_VERSION = 1``, a ``title``, the ``fields`` it needs (each a ``Field``; mark a token
-  ``secret``) and ``missing``: for each of ``setup``, ``set_challenge`` and ``ask_again`` it cannot
-  do, the sentence the operator reads instead.
+  ``secret``, one that must be given ``required``, and one rarely changed ``advanced``, which the
+  window shows only when asked) and ``missing``: for each of ``setup``,
+  ``set_challenge`` and ``ask_again`` it cannot do, the sentence the operator reads instead.
 - ``__init__(values)`` takes the fields' values by key.
 - ``setup(window, force, dry_run)`` yields ``Step`` objects; ``set_challenge(window)``; ``phones()``
   answers ``Phone`` objects, oldest first, each with a ``State``; ``name(names)`` and ``ask_again(ids)``
   answer the lines to show.
 - It raises only ``MdmError``. One that stops half-way through ``name`` says in ``named`` which
   phones it had already named, and in ``lines`` the lines already due to the operator, such as an
-  old callsign to revoke, which are shown before the error.
+  old callsign to revoke, which are shown before the error. One raised because the MDM does not
+  accept the secret it was given, such as a token that has ended, sets ``unauthorized``: the
+  connector then lets go of that secret, the copy in the keychain too, and asks for it again.
+- Its sentences, in ``missing``, a ``Step``, the lines and an ``MdmError``, are shown as they are
+  by the command line and the window alike, so they name no command, option or button.
 
 Publish it as ``odmdm-connector-<name>``, depending on ``odmdm-connector>=1.1,<2``, with the class
 under the entry point group ``odmdm_connector.mdm``::
