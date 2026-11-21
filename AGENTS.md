@@ -38,6 +38,86 @@ The connector starts no process and runs no code it was given: ruff bans `subpro
 `conftest.py` at the root makes every way to start a process raise for the whole test run. A missing
 feature is not a reason to shell out.
 
+## One dependency: keyring, for the token
+
+Runtime code under `src/` imports nothing but Python's standard library and the package itself,
+with one exception: `store.py` imports keyring, inside `platform_backend()`, to keep the MDM token in
+the system's keychain. Nothing else uses keyring, and the connector must run without it: the
+one-file build leaves it out, and there `platform_backend()` is None and the token is held until the
+connector stops. `tests/test_standard_library.py` fails on any other import, and on keyring anywhere
+but there; CI runs the one file without it. The owner decided on 2026-11-21 first that the connector
+goes into a network without internet as one file with no dependencies (README.rst, "Into a network
+without internet"), as every dependency is one more thing to carry in and keep up, and then: "We
+may have a dependency to manage the token." The operating systems' keychains cannot be reached from
+the standard library without starting a process. The connector departs from the organisation's
+Python template, which uses click and libadvian: the command line is argparse and Fleet is reached
+with urllib. A file the package ships is read through `importlib.resources`, never beside `__file__`,
+so that it is found inside the zip too. A missing feature is not a reason to add a dependency: say
+it is missing and let the owner decide. Development tools are not runtime code and stay in the `dev`
+group.
+
+## The page
+
+`web.py` serves the connector as a page on the operator's computer; `static/` holds its three files.
+The page draws what `App` answers and decides nothing: a rule that a test of `App` cannot reach does
+not belong in `web.py` or `app.js`. Setting up is a row of cards, one thing each, with a bar of three
+parts (Deploy App, the MDM's title, Connect) during a first set-up; the daily work is one view of
+the phones in the earlier desktop window's layout, with the browser's own `dialog` element for
+giving callsigns, one phone, the settings and removing a Deploy App. Keep these when changing either:
+
+- Standard library only, no framework, no library and no build step: three static files.
+  `ThreadingHTTPServer` bound to 127.0.0.1, a daemon thread per connection, so that a connection a
+  browser leaves idle holds nothing up. `Page.lock` is held around every call into `App`, the state
+  and every action, so `App` sees one caller at a time; the static files take no lock. No timer:
+  `Page.state()` asks for the phones once `web.REFRESH` seconds have passed, so they are listed only
+  while a page is open and asking, and never beside a request.
+- Every request: the Host header is `127.0.0.1:<port>` or `localhost:<port>` (no DNS rebinding).
+  The three files in `STATIC` are public code and need nothing more, so that a browser without the
+  key gets a page that says what to do; `/` reads no query. Everything under `/api/` carries one
+  header `X-ODMDM-Key` that equals the key, compared with `secrets.compare_digest`. Never a cookie:
+  a browser sends a cookie for 127.0.0.1 to every port of it, so any program listening on another
+  port would receive the key as soon as a web page sends the browser there. Every POST: the Origin
+  is the page's own and the body a JSON object of at most 64 kB. GET changes nothing.
+- Every answer carries `web.HEADERS`: no caching, a Content-Security-Policy of `'self'` only, no
+  framing, no sniffing, no referrer. Hence no inline script or style, and no external resource.
+- Only the three files in `STATIC` are served, by a fixed table. No path from a request reaches the
+  file system.
+- No request log on the terminal: the first request's address holds the key. Failures go to the
+  app's log.
+- The page builds elements with `createElement` and text nodes, never `innerHTML` with anything from
+  the server. The browser keeps exactly one thing, the page's key, in `localStorage`, which a
+  browser keeps apart for each port, so that every tab of the page has it; it is worthless once the
+  connector stops. Nothing else may ever be kept there: no other storage, no cookie. Every sentence it
+  shows comes from an answer; `app.js` adds labels, headings, the lines of the Add card that say
+  where Deploy App's button is, that it opens a new tab and what to have at hand, the Remove
+  dialog's line on what removing changes, and the sentences for a connector that refuses this
+  browser or does not answer. A tab waits for Deploy App only when Deploy App's button opened it,
+  and a card that holds nothing typed follows a Deploy App added, opened or connected in another
+  tab. Focus starts in the first field, else on the main button; in the Remove dialog and on the
+  confirm card for a new Deploy App, on Cancel. The picture of Deploy App's button on the Add card
+  is no control: a `span`, hidden from assistive technology. Each card and each dialog is a form whose
+  main button submits it; a button that cannot act is disabled, not hidden.
+- Deploy App's MDM page is the address `App.mdm_page` hands in the state, opened in a new tab with
+  `rel="noopener noreferrer"`; the page makes no address of its own.
+- A secret, the token, the settings line or the challenge, is a text input masked by the style
+  (`-webkit-text-security`), never `type=password`, so that no password manager offers to keep it
+  and sync it away.
+- A settings line arrives by window message from the page that opened this one, never in the
+  address: the page takes it only when `event.source` is `window.opener`, and passes the message's
+  origin to `/api/read` and `/api/add` as `from`, where `App` takes a line only from its own Deploy
+  App's pages. A line typed or pasted has an empty `from`.
+- `/api/name` sends the names the preview shown held, and `App` names them only if they are the
+  last preview that passed. The page asks for one preview at a time, a moment after the typing
+  stops, and shows only the answer to the last one asked; **Name** waits while one is asked.
+  Nothing previews again behind the operator's back.
+- No answer holds the MDM token or the settings line. A secret field's value never goes to the
+  page: left empty, the kept one is used. The challenge is answered only where `App.challenge()`
+  gives it, for an MDM given it by hand.
+- Known limits: the button in Deploy App talks to whatever listens on port 8737 of this computer,
+  so on a computer shared with other users the settings line is copied by hand instead. Another
+  program on this computer can slow the page down, but cannot read or drive it without the key.
+- The connector opens no browser; `web` prints the address.
+
 ## Facts measured against a live Fleet
 
 Comments in `fleet.py` say what each request shape and wait was measured against. Keep that habit:
@@ -52,7 +132,7 @@ strands every enrolled phone's key.
 ## Commands
 
 - Setup: `uv sync`
-- Test: `uv run pytest` (coverage floor: 65%, set in `pyproject.toml`). Needs no network, no Fleet
+- Test: `uv run pytest` (coverage floor: 88%, set in `pyproject.toml`). Needs no network, no Fleet
   and no phone.
 - Hooks, before every commit: `uv run prek run --all-files`. Once per clone:
   `uv run prek install --hook-type pre-commit --hook-type commit-msg`
@@ -67,6 +147,22 @@ strands every enrolled phone's key.
   The chosen plugin gets it in memory; `FleetPlugin` hands it to `FleetMdm`, which sends it only as
   the `Authorization` header to the MDM URL. A plugin from another package sees it too, so the
   command line names that package on stderr before loading it.
-- The tool never logs it, prints it, takes it as an option or argument, or writes it to a file.
+- The page takes it typed, and `App` holds it in memory, by Deploy App, MDM and field, until the
+  connector stops. With "Remember on this computer" ticked and a keychain at hand (`App.keeps`), it
+  is kept in the keychain too, service `odmdm-connector`, account `<host>:<mdm>:<field key>`, through
+  the one keyring back end `store.platform_backend()` names for the system and sets as keyring's, so
+  that neither `PYTHON_KEYRING_BACKEND`, keyring's configuration file nor another back end installed
+  chooses where it goes. A secret is looked for in memory first, then in the keychain. Connecting
+  with remember off, removing the Deploy App and the MDM refusing it (`MdmError.unauthorized`) all
+  remove the kept copy; there is no other way to forget it. Whatever a back end raises is "the
+  keychain did not answer", logged by its kind only. Never a plaintext fallback.
+- The tool never logs it, prints it, takes it as an option or argument, or writes it to a file: only
+  the keychain keeps it.
   Keep it that way: no `--token` option, no token in an environment variable, no token in an error
   message. `.gitignore` ignores `*.token` so a token file in the checkout cannot be committed.
+- **The page's key**, made at start by `odmdm-connector web` and printed once, in the address's
+  fragment (`/#key=…`), which a browser sends to no server: whoever has it drives the connector and
+  so the MDM. `app.js` takes it out of the address, keeps it in `localStorage` only once
+  `/api/state` accepts it (any web page can send the browser to the address with a wrong one), and
+  sends it only as the `X-ODMDM-Key` header to the page's own `/api/`. Never log it, never put it in
+  an answer, never in a cookie or a query.
