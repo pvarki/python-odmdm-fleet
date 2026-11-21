@@ -19,13 +19,16 @@ from urllib.parse import urlparse
 
 from odmdm_connector import __version__
 
-from . import core, plugins, settings, web
+from . import browser, core, plugins, settings, store, web
 from .app import App
 from .mdm import ASK_AGAIN, SET_CHALLENGE, SETUP, Field, Mdm, MdmError
 from .settings import Settings
 
 #: Said when ODMDM_LOG_LEVEL is not a number
 LOG_LEVEL = "ODMDM_LOG_LEVEL must be a whole number, such as 10 for debug or 20 for info: change it, or unset it."
+#: Said before the page's address, when a browser was asked to open it and when not
+OPENING = "The connector's page is opening in your browser. If it does not, open this address:"
+OPEN = "Open this address in your browser:"
 #: Said when Ctrl+C stops the page while a job is under way
 STOPPED_BUSY = "Stopped while the MDM was still being worked with: refresh the phones when the connector runs again."
 
@@ -354,9 +357,11 @@ def mdms(args: argparse.Namespace) -> int:
 def page(args: argparse.Namespace) -> int:
     """Serve the connector as a page that only this computer can open, until Ctrl+C
 
-    Open the address it prints: it holds a key that the page needs. It opens no browser itself.
+    The page opens in your default browser; if it does not, open the address it prints: it holds a
+    key that the page needs.
     """
     started = App.default()
+    directory = store.directory()
     try:
         try:
             server = web.Page(started, args.port)
@@ -371,7 +376,10 @@ def page(args: argparse.Namespace) -> int:
             raise _Failed(
                 f"The page cannot listen on port {args.port} of this computer: {exc.strerror}. {advice}"
             ) from exc
-        print(f"Open this address in your browser: {server.address}")
+        if args.browser and browser.open_page(server.address, directory):
+            print(f"{OPENING} {server.address}")
+        else:
+            print(f"{OPEN} {server.address}")
         print("Press Ctrl+C to stop it.", flush=True)
         with server:
             try:
@@ -380,6 +388,7 @@ def page(args: argparse.Namespace) -> int:
                 if started.busy():
                     print(STOPPED_BUSY, file=sys.stderr)
     finally:
+        browser.remove(directory)
         started.close()
     return 0
 
@@ -474,4 +483,5 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_argument(
         "--port", type=_between(1, 65535), default=web.PORT, help="The port on 127.0.0.1 (default: %(default)s)"
     )
+    sub.add_argument("--no-browser", dest="browser", action="store_false", help="Only print the address")
     return parser
