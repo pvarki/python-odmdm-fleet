@@ -6,14 +6,18 @@ say which. None of it mentions a product: what to install arrives in the templat
 
 import dataclasses
 import datetime
+import http.client
 import json
 import logging
+import secrets
+import ssl
 import time
+import urllib.error
+import urllib.request
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
-import httpx
-
+from . import __version__
 from .icon import launcher_icon
 from .template import MdmTemplate
 
@@ -24,8 +28,76 @@ WEB_APP_PUBLISH_ATTEMPTS = 12
 WEB_APP_PUBLISH_WAIT = 10.0
 
 
+def _same_case(url: str) -> str:
+    """A URL with its scheme and host lower-cased, as they compare without case"""
+    parts = urlparse(url)
+    return parts._replace(scheme=parts.scheme.lower(), netloc=parts.netloc.lower()).geturl()
+
+
 class FleetError(RuntimeError):
     """Fleet refused, or answered something we cannot use"""
+
+
+class Unauthorized(FleetError):
+    """Fleet answered 401: it does not accept the token"""
+
+
+#: The proxy the environment names, and HTTPS with certificates checked: nothing else. Without a
+#: redirect handler a redirect comes back as an answer and is never followed, so the token goes
+#: nowhere but the MDM URL; without the error handlers an answer of any status comes back as it is.
+_OPENER = urllib.request.OpenerDirector()
+_OPENER.add_handler(urllib.request.ProxyHandler())
+_OPENER.add_handler(urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+
+
+def _send(method: str, url: str, headers: dict[str, str], body: bytes | None, timeout: float) -> tuple[int, bytes]:
+    """Send one request to the MDM and return its status and body, whatever the status"""
+    if urlparse(url).scheme != "https":
+        # The token goes with every request, so it must not cross the network readable
+        raise FleetError("the MDM address must start with https://")
+    try:
+        request = urllib.request.Request(
+            url, data=body, headers={**headers, "User-Agent": f"odmdm-connector/{__version__}"}, method=method
+        )
+        with _OPENER.open(request, timeout=timeout) as response:
+            return int(response.status), response.read()
+    except ValueError:
+        # Its text quotes the header it refused, the token with it
+        raise FleetError("the MDM address or the token holds a character a request cannot carry") from None
+    except urllib.error.URLError as exc:
+        raise FleetError(f"could not reach the MDM: {exc.reason}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        raise FleetError(f"could not reach the MDM: {exc}") from exc
+
+
+def _multipart(
+    fields: dict[str, str], file_field: str, filename: str, payload: bytes, content_type: str
+) -> tuple[str, bytes]:
+    """A multipart/form-data body and its content type: the plain fields, then the file"""
+    for name in (*fields, file_field, filename, content_type):
+        if any(character in name for character in '"\r\n'):
+            raise ValueError(f"{name!r} cannot go in a multipart header")
+    boundary = secrets.token_hex(16)
+    parts = [
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
+        for name, value in fields.items()
+    ]
+    parts.append(
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
+        f"Content-Type: {content_type}\r\n\r\n".encode()
+        + payload
+        + b"\r\n"
+    )
+    parts.append(f"--{boundary}--\r\n".encode())
+    return f"multipart/form-data; boundary={boundary}", b"".join(parts)
+
+
+#: Said when Fleet answers 401. A token copied from a signed-in account is that sign-in's own, and Fleet ends it
+#: after some days or at sign-out; an API-only user's token does not end.
+UNAUTHORIZED = (
+    "the API token is not accepted. A token copied from a signed-in account ends with that sign-in: "
+    "give a new one, or an API-only user's, which does not end"
+)
 
 
 #: Fleet's hosts listing answers in pages; Fleet's page numbers start from 0
@@ -75,25 +147,22 @@ class FleetMdm:
         self.timeout = timeout
 
     def _call(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-        url = f"{self.base_url}{path}"
-        try:
-            response = httpx.request(
-                method,
-                url,
-                json=body,
-                headers={"Authorization": f"Bearer {self._token}"},
-                timeout=self.timeout,
-            )
-        except httpx.HTTPError as exc:
-            raise FleetError(f"could not reach the MDM: {exc}") from exc
-        if response.status_code >= 400:
+        headers = {"Authorization": f"Bearer {self._token}"}
+        data = None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            data = json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        status, answer = _send(method, f"{self.base_url}{path}", headers, data, self.timeout)
+        if status == 401:
+            raise Unauthorized(UNAUTHORIZED)
+        if not 200 <= status < 300:
             # Enough of the body to keep the reason intact: the retry below matches on it, and
             # truncating to a couple of hundred characters cut the phrase off mid-word.
-            raise FleetError(f"{method} {path} answered {response.status_code}: {response.text[:800]}")
-        if not response.content:
+            raise FleetError(f"{method} {path} answered {status}: {answer.decode('utf-8', 'replace')[:800]}")
+        if not answer:
             return {}
         try:
-            payload: dict[str, Any] = response.json()
+            payload: dict[str, Any] = json.loads(answer)
         except ValueError as exc:
             raise FleetError(f"{method} {path} did not answer JSON") from exc
         return payload
@@ -107,20 +176,15 @@ class FleetMdm:
         file_field: str,
         content_type: str = "application/json",
     ) -> dict[str, Any]:
-        url = f"{self.base_url}{path}"
-        try:
-            response = httpx.post(
-                url,
-                data=fields,
-                files={file_field: (filename, payload, content_type)},
-                headers={"Authorization": f"Bearer {self._token}"},
-                timeout=self.timeout,
-            )
-        except httpx.HTTPError as exc:
-            raise FleetError(f"could not reach the MDM: {exc}") from exc
-        if response.status_code >= 400:
-            raise FleetError(f"upload to {path} answered {response.status_code}: {response.text[:200]}")
-        return response.json() if response.content else {}
+        form_type, form = _multipart(fields, file_field, filename, payload, content_type)
+        headers = {"Authorization": f"Bearer {self._token}", "Content-Type": form_type}
+        status, answer = _send("POST", f"{self.base_url}{path}", headers, form, self.timeout)
+        if status == 401:
+            raise Unauthorized(UNAUTHORIZED)
+        if not 200 <= status < 300:
+            raise FleetError(f"upload to {path} answered {status}: {answer.decode('utf-8', 'replace')[:200]}")
+        result: dict[str, Any] = json.loads(answer) if answer else {}
+        return result
 
     # --- scopes ---------------------------------------------------------------
 
@@ -134,7 +198,7 @@ class FleetMdm:
             if team.get("name") == name:
                 return int(team["id"])
         if not create:
-            raise FleetError(f"no team named {name}: check --team or ODMDM_TEAM")
+            raise FleetError(f"no team named {name}: check the team's name")
         created = self._call("POST", "/api/latest/fleet/teams", {"name": name})
         team = created.get("team", created)
         LOGGER.info("Created team %s", name)
@@ -224,8 +288,10 @@ class FleetMdm:
         except FleetError as exc:
             if not here:
                 raise
-            # Between the delete and the upload the team has no policy, and every phone in it loses the settings
-            raise FleetError(
+            # Between the delete and the upload the team has no policy, and every phone in it loses the settings.
+            # A token refused meanwhile is still a token refused, which the operator is asked for again.
+            kind = Unauthorized if isinstance(exc, Unauthorized) else FleetError
+            raise kind(
                 f"policy {name} was being replaced in team {team} and may now be missing ({exc}). "
                 "Run apply to put it back"
             ) from exc
@@ -361,28 +427,34 @@ class FleetMdm:
         standard for it and every MDM words it differently. Fleet happens to expose it, so here
         it is one less thing for an operator to get wrong by hand.
 
-        An existing one is repointed rather than left alone: the name is ours, so a drifted URL
-        means this deployment moved, not that somebody else owns it. And a challenge is always
-        sent when there is one: RASENMAEHER makes a new one for every enrolment window, and Fleet
-        never hands the old one back to compare against.
+        One authority of a name serves one Deploy App. An existing one with another URL is refused,
+        never repointed: the shipped template names the same authority for every Deploy App, so a
+        second Deploy App on the same Fleet would otherwise send the first one's phones to itself.
+        One with this URL gets the challenge whenever there is one: RASENMAEHER makes a new one for
+        every enrolment window, and Fleet never hands the old one back to compare against.
         """
         authorities = self._call("GET", "/api/latest/fleet/certificate_authorities").get("certificate_authorities", [])
         match = [a for a in authorities if a.get("name") == name]
         if match:
             authority_id = int(match[0]["id"])
-            # The listing does not carry the url, only the detail does, so compare against the
-            # detail. Reading the url off the listing leaves it None forever, which turns every
-            # run into a repoint of something already pointing at us.
-            detail = self._call("GET", f"/api/latest/fleet/certificate_authorities/{authority_id}")
-            if detail.get("url") == scep_url and not challenge:
+            # The listing does not carry the url, only the detail does, so compare against the detail
+            serves = self._call("GET", f"/api/latest/fleet/certificate_authorities/{authority_id}").get("url")
+            if _same_case(serves or "") != _same_case(scep_url):
+                raise FleetError(
+                    f"certificate authority {name} already serves {serves or 'another address'}: connect this "
+                    "Deploy App to a Fleet of its own, give it a template that names another authority, or delete "
+                    "that authority in Fleet if the Deploy App moved"
+                )
+            if not challenge:
                 return authority_id
             # The challenge is never logged. No name in the body: Fleet reads a name on a PATCH as
             # a rename and then refuses it as a conflict with the authority's own existing name,
             # so sending it turns every update into a 409.
-            LOGGER.info("Updating certificate authority %s at %s", name, scep_url)
-            proxy = {"url": scep_url, "challenge": challenge} if challenge else {"url": scep_url}
+            LOGGER.info("Giving certificate authority %s at %s the new challenge", name, scep_url)
             self._call(
-                "PATCH", f"/api/latest/fleet/certificate_authorities/{authority_id}", {"custom_scep_proxy": proxy}
+                "PATCH",
+                f"/api/latest/fleet/certificate_authorities/{authority_id}",
+                {"custom_scep_proxy": {"url": scep_url, "challenge": challenge}},
             )
             return authority_id
 
@@ -486,7 +558,7 @@ class FleetMdm:
         for template in self._call("GET", f"/api/latest/fleet/certificates?team_id={team}").get("certificates", []):
             if template.get("name") == name:
                 return int(template["id"])
-        raise FleetError(f"team {team} has no certificate template named {name}: run apply first")
+        raise FleetError(f"team {team} has no certificate template named {name}: set Fleet up first")
 
     def name_host(self, host: int, callsign: str) -> None:
         """Give the host its callsign
@@ -532,10 +604,11 @@ class FleetMdm:
         nothing typed into Fleet by hand. Without it the authority must already be there, which
         is the case for an MDM we cannot create one in.
         """
+        # The authority first: refusing it must leave Fleet as it was, a new team included
+        if template.certificate and scep_url:
+            self.ensure_authority(template.certificate.authority, scep_url, challenge)
         team = self.team_id(team_name, create=True)
         if template.certificate:
-            if scep_url:
-                self.ensure_authority(template.certificate.authority, scep_url, challenge)
             self.ensure_certificate(
                 team,
                 template.certificate.name,

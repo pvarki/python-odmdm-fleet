@@ -5,13 +5,21 @@ installs, and an unchanged policy must not be re-uploaded, because a policy rewr
 pass never settles long enough for the device to finish installing anything.
 """
 
+import dataclasses
+import http.client
 import json
+import logging
 import re
-from typing import Any
+import ssl
+import urllib.error
+import urllib.request
+from typing import Any, Self
+from urllib.parse import parse_qsl, urlsplit
 
-import httpx
 import pytest
 
+from odmdm_connector import __version__
+from odmdm_connector import fleet as fleet_module
 from odmdm_connector.fleet import FleetError, FleetMdm
 from odmdm_connector.icon import launcher_icon
 from odmdm_connector.template import App, Certificate, LinkApp, MdmTemplate
@@ -23,6 +31,42 @@ TEMPLATE = MdmTemplate(
     ),
     policy={"defaultPermissionPolicy": "GRANT"},
 )
+
+
+@dataclasses.dataclass(frozen=True)
+class Url:
+    path: str
+    params: dict[str, str]
+
+
+@dataclasses.dataclass(frozen=True)
+class Request:
+    """What the fake Fleet reads of a request"""
+
+    method: str
+    url: Url
+    headers: dict[str, str]
+    content: bytes
+
+
+_dumps = json.dumps
+
+
+class Response:
+    """An answer of the fake Fleet, read as the real opener's answer is"""
+
+    def __init__(self, status: int, json: Any = None, text: str = "") -> None:
+        self.status = status
+        self.content = _dumps(json).encode() if json is not None else text.encode()
+
+    def read(self) -> bytes:
+        return self.content
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
 
 
 class _Fleet:
@@ -41,19 +85,19 @@ class _Fleet:
         self.authorities: list[dict[str, Any]] = [{"id": 3, "name": "RMSCEP", "url": "https://deployment.test/scep"}]
         self._next_id = 100
 
-    def handler(self, request: httpx.Request) -> httpx.Response:
+    def handler(self, request: Request) -> Response:
         path = request.url.path
         self.calls.append((request.method, path))
         if path.endswith("/hosts") and request.method == "GET":
             # Fleet answers one page at a time, the first being page 0
             per_page = int(request.url.params.get("per_page", "100"))
             first = int(request.url.params.get("page", "0")) * per_page
-            return httpx.Response(200, json={"hosts": [{"id": h["id"]} for h in self.hosts[first : first + per_page]]})
+            return Response(200, json={"hosts": [{"id": h["id"]} for h in self.hosts[first : first + per_page]]})
         if path.endswith("/device_mapping") and request.method == "PUT":
             # The name shows in the host detail as its IdP user, which is what the certificate reads
             found = next(h for h in self.hosts if h["id"] == int(path.split("/")[-2]))
             found["end_users"] = [{"idp_username": json.loads(request.content)["email"], "idp_info_updated_at": None}]
-            return httpx.Response(200, json={})
+            return Response(200, json={})
         if path.endswith("/resend") and request.method == "POST":
             # Fleet finds the template through the host's own row, so a host without one is not
             # found (read in Fleet 4.90.1's source). A row still pending is refused, and any other
@@ -66,9 +110,9 @@ class _Fleet:
                 if r.get("certificate_template_id") == template and r["operation_type"] == "install"
             ]
             if not rows:
-                return httpx.Response(404, json={"message": "Resource Not Found"})
+                return Response(404, json={"message": "Resource Not Found"})
             if rows[0]["status"] == "pending":
-                return httpx.Response(
+                return Response(
                     400,
                     json={
                         "message": "Bad request",
@@ -76,14 +120,14 @@ class _Fleet:
                     },
                 )
             rows[0].update(status="pending", detail="")
-            return httpx.Response(200)
+            return Response(200)
         if "/hosts/" in path and request.method == "GET":
             which = int(path.rsplit("/", 1)[-1])
-            return httpx.Response(200, json={"host": next(h for h in self.hosts if h["id"] == which)})
+            return Response(200, json={"host": next(h for h in self.hosts if h["id"] == which)})
         if path.endswith("/certificate_authorities") and request.method == "GET":
             # Fleet's listing omits the url; only the detail carries it. Mirrored so a check
             # that reads the url off the listing fails here too.
-            return httpx.Response(
+            return Response(
                 200,
                 json={
                     "certificate_authorities": [{k: v for k, v in a.items() if k != "url"} for a in self.authorities]
@@ -92,25 +136,25 @@ class _Fleet:
         if "/certificate_authorities/" in path and request.method == "GET":
             which = int(path.rsplit("/", 1)[-1])
             matching = [a for a in self.authorities if a["id"] == which]
-            return httpx.Response(200, json=matching[0] if matching else {})
+            return Response(200, json=matching[0] if matching else {})
         if path.endswith("/certificate_authorities") and request.method == "POST":
             body = json.loads(request.content)["custom_scep_proxy"]
             made = {"id": 55, "name": body["name"], "url": body["url"]}
             self.authorities.append(made)
-            return httpx.Response(200, json={"certificate_authority": made})
+            return Response(200, json={"certificate_authority": made})
         if "/certificate_authorities/" in path and request.method == "PATCH":
             which = int(path.rsplit("/", 1)[-1])
             body = json.loads(request.content)["custom_scep_proxy"]
             if "name" in body:
                 # Fleet reads a name on a PATCH as a rename and refuses it as a conflict with
                 # the authority's own name. Measured against a live Fleet 4.90.1.
-                return httpx.Response(409, json={"message": "Conflict"})
+                return Response(409, json={"message": "Conflict"})
             for authority in self.authorities:
                 if authority["id"] == which:
                     authority.update(body)
-            return httpx.Response(200, json={})
+            return Response(200, json={})
         if path.endswith("/certificates") and request.method == "GET":
-            return httpx.Response(200, json={"certificates": self.certificates})
+            return Response(200, json={"certificates": self.certificates})
         if path.endswith("/certificates") and request.method == "POST":
             body = json.loads(request.content)
             made = {
@@ -120,19 +164,19 @@ class _Fleet:
                 "certificate_authority_id": body["certificate_authority_id"],
             }
             self.certificates.append(made)
-            return httpx.Response(200, json=made)
+            return Response(200, json=made)
         if "/certificates/" in path and request.method == "DELETE":
             gone = int(path.rsplit("/", 1)[-1])
             self.certificates = [c for c in self.certificates if c["id"] != gone]
-            return httpx.Response(200, json={})
+            return Response(200, json={})
         if path == "/api/latest/fleet/teams" and request.method == "GET":
-            return httpx.Response(200, json={"teams": [{"id": 7, "name": "rmscep"}]})
+            return Response(200, json={"teams": [{"id": 7, "name": "rmscep"}]})
         if path.endswith("/software/titles"):
             # Fleet scopes the listing to one team. A stub that ignored team_id would let a
             # lookup find another team's app and call that a pass.
             wanted_team = request.url.params.get("team_id")
             listed = [t for t in self.titles if wanted_team is None or str(t.get("team_id")) == str(wanted_team)]
-            return httpx.Response(200, json={"software_titles": listed})
+            return Response(200, json={"software_titles": listed})
         if path.endswith("/software/web_apps"):
             # Publishing the SAME url twice yields TWO package names: observed against the real
             # Fleet, where one url gave x023e... and then xb017.... Google does not dedupe by
@@ -144,28 +188,28 @@ class _Fleet:
             asked = title_match.group(1) if title_match else ""
             if len(asked) >= 30:
                 # Google refuses a web app title of 30 characters or more, as a bare 400.
-                return httpx.Response(400, json={"message": "Couldn't create. Please check the provided data"})
+                return Response(400, json={"message": "Couldn't create. Please check the provided data"})
             if any(a["title"] == asked for a in self.web_apps):
                 # Fleet refuses a name already published to the enterprise, whatever team it is
                 # in and even if its team is gone. Publishing cannot be undone.
-                return httpx.Response(409, json={"message": "Web app with this name already exists in this fleet"})
+                return Response(409, json={"message": "Web app with this name already exists in this fleet"})
             self._next_id += 1
             pkg = f"com.google.enterprise.webapp.x{self._next_id:08x}"
             self.web_apps.append(
                 {"app_store_id": pkg, "url": wanted, "title": title_match.group(1) if title_match else ""}
             )
-            return httpx.Response(200, json={"app_store_id": pkg})
+            return Response(200, json={"app_store_id": pkg})
         if path.endswith("/app_store_app") and request.method == "PATCH":
-            body = json.loads(request.read())
+            body = json.loads(request.content)
             title_id = int(path.split("/")[-2])
             for title in self.titles:
                 if title["id"] == title_id and "display_name" in body:
                     title["display_name"] = body["display_name"]
-            return httpx.Response(200, json={"app_store_app": {}})
+            return Response(200, json={"app_store_app": {}})
         if path.endswith("/software/app_store_apps"):
             # This is what puts an app in a team. A new web app is listed under its package name,
             # not its title, until a device reports it: seen on the real Fleet.
-            body = json.loads(request.read())
+            body = json.loads(request.content)
             self._next_id += 1
             self.titles.append(
                 {
@@ -176,16 +220,16 @@ class _Fleet:
                     "app_store_app": {"app_store_id": body["app_store_id"]},
                 }
             )
-            return httpx.Response(200, json={"software_title_id": self._next_id})
+            return Response(200, json={"software_title_id": self._next_id})
         if path.endswith("/configuration_profiles"):
             if request.method == "GET":
-                return httpx.Response(
+                return Response(
                     200, json={"profiles": [{k: v for k, v in p.items() if k != "raw"} for p in self.profiles]}
                 )
             # An upload the MDM keeps, so a second pass can see it is already there. Without
             # this the adapter is right to upload again: a profile that has gone missing must
             # be restored whatever we remember pushing.
-            raw = re.search(rb"application/json\r\n\r\n(.*)\r\n--", request.read(), re.DOTALL)
+            raw = re.search(rb"application/json\r\n\r\n(.*)\r\n--", request.content, re.DOTALL)
             assert raw, "the policy must be uploaded as JSON"
             self.profiles.append(
                 {
@@ -196,24 +240,49 @@ class _Fleet:
                     "raw": json.loads(raw.group(1)),
                 }
             )
-            return httpx.Response(200, json={})
+            return Response(200, json={})
         if "/configuration_profiles/" in path and request.method == "GET":
             # Only alt=media answers with the policy; without it Fleet sends metadata.
             found = next(p for p in self.profiles if p["profile_uuid"] == path.rsplit("/", 1)[-1])
             media = request.url.params.get("alt") == "media"
-            return httpx.Response(200, json=found["raw"] if media else {"name": found["name"]})
+            return Response(200, json=found["raw"] if media else {"name": found["name"]})
         if "/configuration_profiles/" in path and request.method == "DELETE":
             self.profiles.clear()
-            return httpx.Response(200, json={})
+            return Response(200, json={})
         if "/app_store_app" in path or path.endswith("/setup_experience/software"):
-            return httpx.Response(200, json={})
-        return httpx.Response(200, json={})
+            return Response(200, json={})
+        return Response(200, json={})
+
+
+class _Opener:
+    """The opener, answering with a handler instead of the network"""
+
+    def __init__(self, handler: Any) -> None:
+        self.handler = handler
+        self.sent: list[urllib.request.Request] = []
+
+    def open(self, request: urllib.request.Request, timeout: float) -> Any:
+        self.sent.append(request)
+        parts = urlsplit(request.full_url)
+        return self.handler(
+            Request(
+                request.get_method(),
+                Url(parts.path, dict(parse_qsl(parts.query))),
+                {name.lower(): value for name, value in request.header_items()},
+                request.data if isinstance(request.data, bytes) else b"",
+            )
+        )
+
+
+def _answering(handler: Any, monkeypatch: pytest.MonkeyPatch) -> _Opener:
+    opener = _Opener(handler)
+    monkeypatch.setattr(fleet_module, "_OPENER", opener)
+    return opener
 
 
 def _mdm(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch) -> FleetMdm:
-    transport = httpx.MockTransport(fleet.handler)
-    monkeypatch.setattr(httpx, "request", lambda m, u, **kw: httpx.Client(transport=transport).request(m, u, **kw))
-    monkeypatch.setattr(httpx, "post", lambda u, **kw: httpx.Client(transport=transport).post(u, **kw))
+    # Looked up on every request, so a test can swap the handler after this
+    _answering(lambda request: fleet.handler(request), monkeypatch)
     return FleetMdm("https://mdm.test", "token")
 
 
@@ -277,10 +346,24 @@ def test_force_reaches_a_host_that_just_joined(monkeypatch: pytest.MonkeyPatch) 
 
 def test_a_refusal_is_reported_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
     """Applying half a template is worse than applying none"""
-    transport = httpx.MockTransport(lambda request: httpx.Response(403, text="nope"))
-    monkeypatch.setattr(httpx, "request", lambda m, u, **kw: httpx.Client(transport=transport).request(m, u, **kw))
+    _answering(lambda request: Response(403, text="nope"), monkeypatch)
     with pytest.raises(FleetError):
         FleetMdm("https://mdm.test", "token").apply("rmscep", TEMPLATE)
+
+
+@pytest.mark.parametrize("upload", [False, True])
+def test_a_token_fleet_does_not_accept_is_said_in_plain_words(monkeypatch: pytest.MonkeyPatch, upload: bool) -> None:
+    """A token from a signed-in account ends with that sign-in, days later: the operator must be told what to do"""
+    _answering(lambda request: Response(401, json={"message": "Authentication required"}), monkeypatch)
+    mdm = FleetMdm("https://mdm.test", "token")
+
+    with pytest.raises(FleetError, match="the API token is not accepted.*give a new one") as raised:
+        if upload:
+            mdm._upload("/api/latest/fleet/configuration_profiles", {}, "policy.json", b"{}", "profile")
+        else:
+            mdm.team_id("Deploy App")
+
+    assert "Authentication required" not in str(raised.value)
 
 
 def test_the_launcher_icon_is_a_valid_png() -> None:
@@ -464,16 +547,40 @@ def test_a_new_windows_challenge_reaches_an_authority_already_pointing_at_us(
     assert fleet.authorities[0]["url"] == "https://deployment.test/scep"
 
 
-def test_a_drifted_authority_is_repointed_not_duplicated(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The name is ours, so a different URL means the deployment moved
+def test_an_authority_that_serves_another_deploy_app_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shipped template names the same authority for every Deploy App
 
-    Creating a second one would leave the certificate template pointing at whichever the lookup
-    happened to find first.
+    Repointing it would send the phones of the Deploy App it serves to the one connected now.
     """
     fleet = _Fleet()
-    _mdm(fleet, monkeypatch).apply("rmscep", _with_cert(), scep_url="https://moved.test/scep", challenge="rotated")
-    assert len(fleet.authorities) == 1, "a drifted authority must be repointed, not duplicated"
-    assert fleet.authorities[0]["url"] == "https://moved.test/scep"
+    with pytest.raises(FleetError) as raised:
+        _mdm(fleet, monkeypatch).apply("rmscep", _with_cert(), scep_url="https://moved.test/scep", challenge="rotated")
+
+    assert str(raised.value) == (
+        "certificate authority RMSCEP already serves https://deployment.test/scep: connect this Deploy App to a "
+        "Fleet of its own, give it a template that names another authority, or delete that authority in Fleet if "
+        "the Deploy App moved"
+    )
+    assert fleet.authorities == [{"id": 3, "name": "RMSCEP", "url": "https://deployment.test/scep"}]
+    assert not [c for c in fleet.calls if c[0] != "GET"], "nothing changed in Fleet"
+
+
+def test_an_authority_kept_with_an_upper_case_host_is_still_ours(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An earlier version kept the host as the line had it, and a host compares without case"""
+    fleet = _Fleet()
+    fleet.authorities[0]["url"] = "HTTPS://Deployment.TEST/scep"
+    _mdm(fleet, monkeypatch).apply("rmscep", _with_cert(), scep_url="https://deployment.test/scep", challenge="c3")
+
+    assert fleet.authorities[0]["challenge"] == "c3"
+
+
+def test_a_refused_authority_makes_no_team(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second Deploy App naturally gets a team of its own, and a refusal must not leave it behind empty"""
+    fleet = _Fleet()
+    with pytest.raises(FleetError, match="already serves https://deployment.test/scep"):
+        _mdm(fleet, monkeypatch).apply("Second unit", _with_cert(), scep_url="https://second.test/scep", challenge="c2")
+
+    assert not [c for c in fleet.calls if c[0] != "GET"], "nothing changed in Fleet"
 
 
 def test_without_a_scep_url_the_authority_must_already_exist(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -482,17 +589,6 @@ def test_without_a_scep_url_the_authority_must_already_exist(monkeypatch: pytest
     fleet.authorities = []
     with pytest.raises(FleetError, match="RMSCEP"):
         _mdm(fleet, monkeypatch).apply("rmscep", _with_cert())
-
-
-def test_repointing_does_not_try_to_rename(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fleet refuses a PATCH that carries a name, as a conflict with the name already there
-
-    Found against a live Fleet: every repoint answered 409 and no deployment could be moved to
-    a new responder without deleting the authority by hand.
-    """
-    fleet = _Fleet()
-    _mdm(fleet, monkeypatch).apply("rmscep", _with_cert(), scep_url="https://moved.test/scep", challenge="rotated")
-    assert fleet.authorities[0]["url"] == "https://moved.test/scep", "the repoint must have gone through"
 
 
 def test_applying_twice_publishes_one_web_app(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -619,3 +715,178 @@ def test_a_policy_without_a_time_is_reported(monkeypatch: pytest.MonkeyPatch) ->
     with pytest.raises(FleetError, match="the time '' could not be read"):
         mdm.resend_policy(7, mdm.phones(7, "rmscep"))
     assert not _policy_uploads(fleet)
+
+
+# --- the transport --------------------------------------------------------------
+
+TOKEN = "secret-token-4f2a"
+
+
+@pytest.mark.parametrize("url", ["http://mdm.example.fi", "file:///etc", "ftp://192.0.2.10"])
+def test_only_https_is_sent(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+    """The token goes with every request, so it must not cross the network readable"""
+    opener = _answering(lambda request: Response(200, json={}), monkeypatch)
+
+    with pytest.raises(FleetError, match="must start with https://"):
+        FleetMdm(url, TOKEN).team_id("rmscep")
+
+    assert not opener.sent
+
+
+def test_the_opener_only_proxies_and_speaks_https() -> None:
+    """No redirect is followed, no other scheme is spoken, no status is turned into an exception
+
+    The proxy handler is there only while the environment names a proxy: without one it has nothing to open.
+    """
+    handlers: list[object] = vars(fleet_module._OPENER)["handlers"]
+
+    assert {type(handler) for handler in handlers} <= {urllib.request.ProxyHandler, urllib.request.HTTPSHandler}
+    https = next(handler for handler in handlers if isinstance(handler, urllib.request.HTTPSHandler))
+    context: ssl.SSLContext = vars(https)["_context"]
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname
+
+
+def test_a_request_says_who_asks_and_what_it_sends(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Request] = []
+
+    def answer(request: Request) -> Response:
+        seen.append(request)
+        return Response(200, json={"team": {"id": 9}})
+
+    _answering(answer, monkeypatch)
+
+    assert FleetMdm("https://mdm.example.fi/", TOKEN).team_id("Ålands", create=True) == 9
+
+    created = seen[-1]
+    assert (created.method, created.url.path) == ("POST", "/api/latest/fleet/teams")
+    assert created.headers["authorization"] == f"Bearer {TOKEN}"
+    assert created.headers["user-agent"] == f"odmdm-connector/{__version__}"
+    assert created.headers["content-type"] == "application/json"
+    assert json.loads(created.content) == {"name": "Ålands"}
+
+
+def test_an_empty_answer_is_an_empty_object(monkeypatch: pytest.MonkeyPatch) -> None:
+    _answering(lambda request: Response(204), monkeypatch)
+    assert FleetMdm("https://mdm.example.fi", TOKEN)._call("DELETE", "/api/latest/fleet/teams/9") == {}
+
+
+@pytest.mark.parametrize("status", [301, 302, 307, 404, 500])
+def test_an_answer_outside_2xx_is_a_refusal(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    """A redirect is not followed either: it would carry the token on to wherever it points"""
+    opener = _answering(lambda request: Response(status, text="x" * 1000), monkeypatch)
+
+    with pytest.raises(FleetError) as raised:
+        FleetMdm("https://mdm.example.fi", TOKEN)._call("GET", "/api/latest/fleet/teams")
+
+    assert str(raised.value) == f"GET /api/latest/fleet/teams answered {status}: {'x' * 800}"
+    assert len(opener.sent) == 1
+
+
+def test_an_upload_refused_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    _answering(lambda request: Response(302, text="y" * 300), monkeypatch)
+
+    with pytest.raises(FleetError) as raised:
+        FleetMdm("https://mdm.example.fi", TOKEN)._upload("/api/x", {}, "p.json", b"{}", "profile")
+
+    assert str(raised.value) == f"upload to /api/x answered 302: {'y' * 200}"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")),
+        urllib.error.URLError(ssl.SSLCertVerificationError("certificate verify failed")),
+        TimeoutError("timed out"),
+        ssl.SSLError("record layer failure"),
+        http.client.RemoteDisconnected("Remote end closed connection without response"),
+    ],
+)
+def test_an_mdm_out_of_reach_is_said_without_the_token(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, failure: Exception
+) -> None:
+    def failing(request: Request) -> Response:
+        raise failure
+
+    _answering(failing, monkeypatch)
+    caplog.set_level(logging.DEBUG)
+
+    with pytest.raises(FleetError, match="^could not reach the MDM: ") as raised:
+        FleetMdm("https://mdm.example.fi", TOKEN).team_id("rmscep")
+
+    assert TOKEN not in str(raised.value)
+    assert TOKEN not in caplog.text
+
+
+def test_a_request_that_cannot_be_carried_is_said_without_the_token(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """http.client refuses a header with a line break in a ValueError whose text quotes it, token and all"""
+
+    def refusing(request: Request) -> Response:
+        raise ValueError(f"Invalid header value {request.headers['authorization'].encode()!r}")
+
+    _answering(refusing, monkeypatch)
+    caplog.set_level(logging.DEBUG)
+
+    with pytest.raises(FleetError) as raised:
+        FleetMdm("https://mdm.example.fi", TOKEN).team_id("rmscep")
+
+    assert str(raised.value) == "the MDM address or the token holds a character a request cannot carry"
+    assert raised.value.__cause__ is None and raised.value.__suppress_context__
+    assert TOKEN not in caplog.text
+
+
+def test_the_upload_is_a_form_with_the_file_last(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Request] = []
+
+    def answer(request: Request) -> Response:
+        seen.append(request)
+        return Response(200, json={"ok": True})
+
+    _answering(answer, monkeypatch)
+
+    result = FleetMdm("https://mdm.example.fi", TOKEN)._upload(
+        "/api/x",
+        {"title": "Deploy App", "url": "https://deploy.example.fi"},
+        "icon.png",
+        b"\x89PNG",
+        "icon",
+        "image/png",
+    )
+
+    assert result == {"ok": True}
+    kind, _, boundary = seen[0].headers["content-type"].partition("; boundary=")
+    assert kind == "multipart/form-data"
+    assert (
+        seen[0].content
+        == (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\nDeploy App\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="url"\r\n\r\nhttps://deploy.example.fi\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="icon"; filename="icon.png"\r\n'
+            f"Content-Type: image/png\r\n\r\n"
+        ).encode()
+        + b"\x89PNG\r\n"
+        + f"--{boundary}--\r\n".encode()
+    )
+
+
+@pytest.mark.parametrize(
+    "fields, filename, content_type",
+    [
+        ({'ti"tle': "x"}, "p.json", "application/json"),
+        ({"title\r\n": "x"}, "p.json", "application/json"),
+        ({}, 'p".json', "application/json"),
+        ({}, "p\n.json", "application/json"),
+        ({}, "p.json", "application/json\r\nX-Evil: 1"),
+    ],
+)
+def test_a_name_that_would_break_the_form_is_refused(
+    monkeypatch: pytest.MonkeyPatch, fields: dict[str, str], filename: str, content_type: str
+) -> None:
+    opener = _answering(lambda request: Response(200), monkeypatch)
+
+    with pytest.raises(ValueError, match="cannot go in a multipart header"):
+        FleetMdm("https://mdm.example.fi", TOKEN)._upload("/api/x", fields, filename, b"{}", "profile", content_type)
+
+    assert not opener.sent
