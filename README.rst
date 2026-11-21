@@ -78,6 +78,7 @@ Commands
     odmdm-connector name 31=OTTER4 32=OTTER5  # name these phones, and Fleet sends their certificates
     odmdm-connector name --all OTTER          # the same for every phone without a name, numbered
     odmdm-connector resend [HOST_ID ...]      # ask again; without ids, every named phone that failed
+    odmdm-connector mdms                      # the MDMs installed: fleet built in, and any plugins
 
 ``name --all`` numbers in enrolment order from one above the highest ``OTTER<n>`` in the team, or
 from ``--start N``, 1 or more. It sees only this team's phones, and Deploy App never gives a
@@ -121,6 +122,28 @@ from the file its ``_FILE`` variable names:
     The certificate template's name, which becomes the Android keystore alias. Default ``rmscep``,
     what the first deployments were set up with. Never change it for a deployment: a second key
     will not install over an existing alias.
+
+Plugins
+-------
+
+Fleet is built in. Another MDM comes as a plugin: a Python package of its own, named
+``odmdm-connector-<name>``, that the connector finds once it is installed beside it. A plugin is
+code that sees the MDM token, so installing one means trusting it as much as the connector
+itself. Install only one you know the source of. When the MDM chosen is a plugin, every command
+says on stderr which package and version it comes from.
+
+Add one with the same install line and ``--with``::
+
+    uv tool install git+https://github.com/pvarki/python-odmdm-fleet --with odmdm-connector-<name>
+
+See what is installed, without loading any of it::
+
+    odmdm-connector mdms
+
+Choose one with ``--mdm NAME`` before the command, or ``ODMDM_MDM``; the default is ``fleet``.
+Its settings are given as for Fleet: ``--set KEY=VALUE``, or ``ODMDM_<KEY>``, and a secret only
+from the file ``ODMDM_<KEY>_FILE`` names. A plugin's MDM may lack something Fleet can do, such as
+taking the challenge by API; the command then says what to do instead and changes nothing.
 
 The template
 ------------
@@ -210,6 +233,40 @@ What Fleet does that you would not guess
   phone's certificate. Usually a bad or taken name, or Fleet still has the previous window's
   challenge. A taken name is never freed, not even by revoking it, so give the phone another with
   ``name``. For the challenge, ``challenge`` and then ``resend``.
+
+Write a plugin
+--------------
+
+An MDM fits if it can do three things: take a static SCEP challenge for its certificate
+authority, put a per-device value that its API can set into the certificate subject (the
+callsign, as the common name), and ask a device for its certificate again.
+
+A plugin is one class that satisfies ``Mdm`` in ``src/odmdm_connector/mdm.py``, which is standard
+library only:
+
+- ``API_VERSION = 1``, a ``title``, the ``fields`` it needs (each a ``Field``; mark a token
+  ``secret``) and ``missing``: for each of ``setup``, ``set_challenge`` and ``ask_again`` it cannot
+  do, the sentence the operator reads instead.
+- ``__init__(values)`` takes the fields' values by key.
+- ``setup(window, force, dry_run)`` yields ``Step`` objects; ``set_challenge(window)``; ``phones()``
+  answers ``Phone`` objects, oldest first, each with a ``State``; ``name(names)`` and ``ask_again(ids)``
+  answer the lines to show.
+- It raises only ``MdmError``. One that stops half-way through ``name`` says in ``named`` which
+  phones it had already named, and in ``lines`` the lines already due to the operator, such as an
+  old callsign to revoke, which are shown before the error.
+
+Publish it as ``odmdm-connector-<name>``, depending on ``odmdm-connector>=1.1,<2``, with the class
+under the entry point group ``odmdm_connector.mdm``::
+
+    [project.entry-points."odmdm_connector.mdm"]
+    <name> = "odmdm_connector_<name>:<Name>Mdm"
+
+The connector ships a test kit: ``odmdm_connector.testing.contract.CHECKS``, the checks every
+plugin must pass given a factory for it, and ``odmdm_connector.testing.FakeMdm``, an MDM in
+memory. Start from ``examples/odmdm-connector-demo``: a pretend MDM with three phones that cannot
+take a challenge by API, its own ``pyproject.toml`` and its contract test. The repository's CI
+builds it and the connector, installs both as above and runs ``odmdm-connector --mdm demo
+phones``.
 
 Development
 -----------

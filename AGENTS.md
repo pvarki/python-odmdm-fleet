@@ -20,10 +20,23 @@ The command line knows an MDM only through one contract; Fleet is the plugin bui
 - `src/odmdm_connector/mdm.py`: the contract (`Mdm`, `Phone`, `State`, `Field`, `Step`, `MdmError`),
   standard library only.
 - `core.py`: the naming rules, the same for every MDM. `console.py`: the command line. Neither
-  imports anything from `fleet.py` or `fleet_plugin.py`: the command line loads the MDM chosen with
-  `--mdm` through the entry point group `odmdm_connector.mdm`.
+  imports anything from `fleet.py` or `fleet_plugin.py`: the command line gets the MDM chosen with
+  `--mdm` only through `plugins.load`.
+- `plugins.py`: lists the entry point group `odmdm_connector.mdm` without importing anything, and
+  imports only the one entry point chosen. It is the only dynamic import there is.
+- `testing/`: the kit for plugin authors, shipped in the package: `FakeMdm` and `contract.CHECKS`.
+  The repository runs the checks against the fake, Fleet over the stub, and the demo.
+- `examples/odmdm-connector-demo/`: a plugin as a package of its own. CI builds it and the
+  connector and installs both as an operator would.
 - `fleet_plugin.py`: Fleet behind the contract, registered in `pyproject.toml` as `fleet`. `fleet.py`:
   Fleet's HTTP dialect. `template.py` and the shipped `template.json`: what a deployment's phones need.
+
+## No processes
+
+The connector starts no process and runs no code it was given: ruff bans `subprocess`, the
+`os.system`/`popen`/`exec*`/`spawn*` family, `webbrowser`, `eval` and `exec`, and
+`tests/conftest.py` makes every way to start a process raise for the whole test run. A missing
+feature is not a reason to shell out.
 
 ## Facts measured against a live Fleet
 
@@ -52,7 +65,8 @@ strands every enrolled phone's key.
   `src/odmdm_connector/console.py`, from the file `ODMDM_TOKEN_FILE` names: a plugin field marked
   secret is read only from the file `ODMDM_<KEY>_FILE` names, never from `--set` or a plain variable.
   The chosen plugin gets it in memory; `FleetPlugin` hands it to `FleetMdm`, which sends it only as
-  the `Authorization` header to the MDM URL.
+  the `Authorization` header to the MDM URL. A plugin from another package sees it too, so the
+  command line names that package on stderr before loading it.
 - The tool never logs it, prints it, takes it as an option or argument, or writes it to a file.
   Keep it that way: no `--token` option, no token in an environment variable, no token in an error
   message. `.gitignore` ignores `*.token` so a token file in the checkout cannot be committed.

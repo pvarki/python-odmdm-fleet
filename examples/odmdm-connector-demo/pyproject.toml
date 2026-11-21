@@ -6,7 +6,7 @@ license = "MIT"
 readme = "README.rst"
 requires-python = ">=3.11,<4.0"
 dependencies = [
-    "odmdm-connector>=1,<2",
+    "odmdm-connector>=1.1,<2",
 ]
 
 [project.entry-points."odmdm_connector.mdm"]
