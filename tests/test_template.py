@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from odmdm_connector.template import TemplateError, load
+from odmdm_connector.template import EXAMPLE, TemplateError, load
 
 GOOD = {
     "apps": [
@@ -169,9 +169,7 @@ def test_annotations_never_reach_the_device(tmp_path: Path) -> None:
 
 def test_the_example_is_a_template_we_accept() -> None:
     """Operators start from it, so it must never drift out of what load() takes"""
-    example = Path(__file__).resolve().parent.parent / "examples" / "template.json"
-
-    template = load(example, domain="example.fi", key_alias="rmscep")
+    template = load(EXAMPLE, domain="example.fi", key_alias="rmscep")
 
     assert template.certificate is not None
     assert template.certificate.name == "rmscep", "the keystore alias comes from the setting"

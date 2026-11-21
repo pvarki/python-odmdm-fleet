@@ -1,6 +1,7 @@
 {
   "_comment": [
-    "What a Deploy App deployment's phones need. Copy it, change what to install, and apply it with",
+    "What a Deploy App deployment's phones need. apply states this one unless given another: copy it,",
+    "change what to install, and apply it with",
     "  odmdm-connector apply --template template.json --domain <domain>",
     "",
     "Placeholders filled in at apply time: {domain}, {mtls_url}, {key_alias}.",

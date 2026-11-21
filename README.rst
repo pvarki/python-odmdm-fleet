@@ -125,8 +125,8 @@ The template
 What to install is a property of the deployment, so it is a document rather than code: the apps,
 their managed configuration, the Android Management API device policy, a launcher link, and the
 certificate template. ``{domain}``, ``{mtls_url}`` and ``{key_alias}`` are filled in. Keys
-beginning with ``_`` are comments and never reach Fleet. ``examples/template.json`` is a working one
-for Deploy App, with its reasoning in the comments.
+beginning with ``_`` are comments and never reach Fleet. ``src/odmdm_connector/template.json``, shipped
+in the package, is a working one for Deploy App, with its reasoning in the comments.
 
 The certificate subject is the contract with the deployment. Its common name becomes the callsign:
 3 to 32 letters, digits or hyphens, no hyphen at either end. It is the name ``name`` gives the

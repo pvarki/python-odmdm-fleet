@@ -23,6 +23,9 @@ from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 
+#: The template shipped with the package: what a Deploy App deployment's phones need
+EXAMPLE = Path(__file__).with_name("template.json")
+
 
 class TemplateError(ValueError):
     """The document is not something we can act on"""
