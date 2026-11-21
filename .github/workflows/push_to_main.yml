@@ -23,6 +23,7 @@ jobs:
 
   release:
     name: Tag the current version and release it
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
