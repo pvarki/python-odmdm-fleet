@@ -24,11 +24,14 @@ class SettingsError(ValueError):
 
 @dataclass(frozen=True)
 class Settings:
-    """What one enrolment window gives the MDM"""
+    """What one enrolment window gives the MDM
+
+    closes is None for a bare challenge typed without its line, which says nothing of the window.
+    """
 
     scep_url: str
     challenge: str = field(repr=False)
-    closes: datetime.datetime
+    closes: datetime.datetime | None = None
 
 
 def is_line(value: str) -> bool:
