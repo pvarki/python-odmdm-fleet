@@ -95,8 +95,8 @@ extend-select = ["TID251", "S102", "S307"]
 
 [tool.mypy]
 strict=true
-# The demo plugin's tests import it from its source, as pytest does
-mypy_path="examples/odmdm-connector-demo/src"
+# The demo plugin's tests import it from its source, as pytest does, and the manifest's test from packaging
+mypy_path="examples/odmdm-connector-demo/src:packaging"
 
 [[tool.mypy.overrides]]
 module="tests.*"
@@ -104,8 +104,8 @@ disallow_untyped_decorators=false
 
 [tool.pytest.ini_options]
 junit_family="xunit2"
-# The demo plugin, a package of its own, runs its contract tests here from its source
-pythonpath=["examples/odmdm-connector-demo/src"]
+# The demo plugin, a package of its own, runs its contract tests here from its source; and packaging/manifest.py
+pythonpath=["examples/odmdm-connector-demo/src", "packaging"]
 addopts="--cov=odmdm_connector --cov-fail-under=88 --cov-branch"
 
 [tool.coverage.run]
