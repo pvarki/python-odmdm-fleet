@@ -519,17 +519,15 @@ class FleetMdm:
                 return int(template["id"])
         raise FleetError(f"team {team} has no certificate template named {name}: run apply first")
 
-    def name_host(self, host: int, callsign: str, template: int | None) -> None:
-        """Give the host its callsign, and have Fleet ask for its certificate again under it
+    def name_host(self, host: int, callsign: str) -> None:
+        """Give the host its callsign
 
         A phone enrols before anybody can name it, so its first request has already failed for
-        want of a name, and naming it does not send that request again by itself. A host with no
-        request yet gets no template: Fleet has none to send again (404, read in Fleet 4.90.1's
-        source), and fills the name in when it makes one.
+        want of a name, and naming it does not send that request again by itself: follow with
+        resend. Not for a host with no request yet: Fleet has none to send again (404, read in
+        Fleet 4.90.1's source), and fills the name in when it makes one.
         """
         self._call("PUT", f"/api/latest/fleet/hosts/{host}/device_mapping", {"email": callsign, "source": "idp"})
-        if template:
-            self.resend(host, template)
 
     def resend(self, host: int, template: int) -> None:
         """Have Fleet send the host its certificate request again, for one more attempt

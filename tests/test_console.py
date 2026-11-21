@@ -601,3 +601,25 @@ def test_phones_reads_every_page_of_hosts(fleet: _Fleet, monkeypatch: pytest.Mon
 
     assert result.exit_code == 0, result.output
     assert [line.split()[0] for line in result.output.splitlines()] == [str(31 + n) for n in range(count)]
+
+
+def test_a_batch_stopped_half_way_says_which_phones_are_named(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch) -> None:
+    """So the operator names only the rest, rather than guessing"""
+    answer = fleet.handler
+
+    def refusing(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/hosts/32/certificates/81/resend"):
+            return httpx.Response(500, text="database is locked")
+        return answer(request)
+
+    monkeypatch.setattr(fleet, "handler", refusing)
+    _mdm(fleet, monkeypatch)
+    fleet.hosts = [_host(host, "failed", detail=NO_NAME) for host in (31, 32, 33)]
+
+    result = CliRunner().invoke(cli_group, ["name", "--all", "OTTER"])
+
+    assert result.exit_code == 1
+    assert result.stdout.splitlines() == ["Host 31 is OTTER1"]
+    assert "Fleet refused: POST /api/latest/fleet/hosts/32/certificates/81/resend answered 500" in result.output
+    assert "Already named before it stopped: 31=OTTER1 32=OTTER2. phones shows where each is" in result.output
+    assert _named(fleet) == {31: "OTTER1", 32: "OTTER2", 33: ""}

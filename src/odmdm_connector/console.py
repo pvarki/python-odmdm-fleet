@@ -308,6 +308,7 @@ def name(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     fleet = _fleet(ctx, mdm_url)
     if not fleet:
         return
+    named: list[str] = []
     try:
         team_id = fleet.team_id(team or config.TEAM)
         found = {phone.id: phone for phone in fleet.phones(team_id, config.KEY_ALIAS)}
@@ -323,15 +324,16 @@ def name(  # pylint: disable=too-many-arguments,too-many-positional-arguments
             ctx.exit(0)
             return
         template = fleet.certificate_template(team_id, config.KEY_ALIAS)
-        named = False
         for host, callsign in wanted:
             old = found[host]
             # Asked again under the name it holds, it is refused as taken: a working phone then shows as refused
             if old.status == "verified" and old.callsign.lower() == callsign.lower():
                 click.echo(f"Host {host} is already {old.callsign}")
                 continue
-            fleet.name_host(host, callsign, template if old.status else None)
-            named = True
+            fleet.name_host(host, callsign)
+            named.append(f"{host}={callsign}")
+            if old.status:
+                fleet.resend(host, template)
             line = f"Host {host} is {callsign}"
             if not old.status:
                 line += ". Fleet has no certificate request for it, so nothing was sent"
@@ -342,6 +344,8 @@ def name(  # pylint: disable=too-many-arguments,too-many-positional-arguments
             _policy_again(fleet, team_id, found)
     except FleetError as exc:
         click.echo(f"Fleet refused: {exc}", err=True)
+        if named:
+            click.echo(f"Already named before it stopped: {' '.join(named)}. phones shows where each is", err=True)
         ctx.exit(1)
         return
     ctx.exit(0)
