@@ -69,9 +69,9 @@ Commands
     odmdm-connector resend [HOST_ID ...]      # ask again; without ids, every named phone that failed
 
 ``name --all`` numbers in enrolment order from one above the highest ``OTTER<n>`` in the team, or
-from ``--start N``. It sees only this team's phones, and Deploy App never gives a callsign out
-twice: where callsigns were used by phones no longer in the team, give ``--start`` above the
-highest ever used. ``name`` changes nothing at all if a callsign is malformed, given twice or
+from ``--start N``, 1 or more. It sees only this team's phones, and Deploy App never gives a
+callsign out twice: where callsigns were used by phones no longer in the team, give ``--start``
+above the highest ever used. ``name`` changes nothing at all if a callsign is malformed, given twice or
 already another phone's, or if a host is not in the team. A phone that already has its certificate
 under the name is left alone. Renaming a phone that has its certificate says which old callsign to
 revoke.

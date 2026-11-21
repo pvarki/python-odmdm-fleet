@@ -272,7 +272,11 @@ def _policy_again(fleet: FleetMdm, team_id: int, found: dict[int, Phone]) -> Non
     help="Name every phone that has no name PREFIX<n>, in enrolment order",
 )
 @click.option(
-    "--start", type=int, metavar="N", default=None, help="The first n for --all (default: one above the highest in use)"
+    "--start",
+    type=click.IntRange(min=1),
+    metavar="N",
+    default=None,
+    help="The first n for --all (default: one above the highest in use)",
 )
 @click.option("--mdm-url", default=None, help="Base URL of Fleet's API (default: ODMDM_MDM_URL)")
 @click.option("--team", default=None, help="The team the phones are in (default: ODMDM_TEAM)")

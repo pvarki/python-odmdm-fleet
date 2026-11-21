@@ -579,3 +579,12 @@ def test_the_mdm_address_must_be_https(fleet: _Fleet, monkeypatch: pytest.Monkey
     assert result.exit_code == 1
     assert "must start with https://" in result.output
     assert not fleet.calls
+
+
+@pytest.mark.parametrize("start", ["0", "-3"])
+def test_name_all_starts_from_one_or_more(fleet: _Fleet, start: str) -> None:
+    """Callsigns are numbered from 1"""
+    result = CliRunner().invoke(cli_group, ["name", "--all", "OTTER", "--start", start])
+
+    assert result.exit_code == 2
+    assert not fleet.calls
