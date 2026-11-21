@@ -1,5 +1,6 @@
 """CLI entrypoints for odmdm-connector"""
 
+import datetime
 import logging
 import re
 from pathlib import Path
@@ -10,7 +11,7 @@ from libadvian.logging import init_logging
 
 from odmdm_connector import __version__
 
-from . import config, template
+from . import config, settings, template
 from .fleet import FleetError, FleetMdm, Phone
 
 LOGGER = logging.getLogger(__name__)
@@ -79,6 +80,32 @@ def _template(ctx: click.Context, path: str | None, domain: str | None) -> templ
         return None
 
 
+def _now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.UTC)
+
+
+def _window(ctx: click.Context, value: str, domain: str) -> tuple[str, str, str] | None:
+    """The SCEP URL, the challenge and until when the window is open, from a challenge or a settings line
+
+    None after saying why not. A bare challenge says nothing of the window. The challenge is never
+    in a message.
+    """
+    if not settings.is_line(value):
+        return f"https://{domain}/scep", value.strip(), ""
+    try:
+        line = settings.parse(value, _now())
+    except settings.SettingsError as exc:
+        click.echo(str(exc), err=True)
+        ctx.exit(1)
+        return None
+    host = urlparse(line.scep_url).hostname or ""
+    if host != domain.lower():
+        click.echo(f"The settings line is for {host}, not {domain}: copy it from this deployment's MDM page", err=True)
+        ctx.exit(1)
+        return None
+    return line.scep_url, line.challenge, f"{line.closes:%Y-%m-%d %H:%M} UTC"
+
+
 @cli_group.command(name="apply")
 @click.pass_context
 @click.option("--template", "path", default=None, help="What to install (default: ODMDM_TEMPLATE)")
@@ -120,16 +147,15 @@ def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         ctx.exit(0)
         return
 
+    window = _window(ctx, config.CHALLENGE, domain or config.DOMAIN)
+    if not window:
+        return
     fleet = _fleet(ctx, mdm_url)
     if not fleet:
         return
     try:
         result = fleet.apply(
-            team or config.TEAM,
-            wanted,
-            force_policy=force_policy,
-            scep_url=f"https://{domain or config.DOMAIN}/scep",
-            challenge=config.CHALLENGE,
+            team or config.TEAM, wanted, force_policy=force_policy, scep_url=window[0], challenge=window[1]
         )
     except FleetError as exc:
         click.echo(f"Fleet refused: {exc}", err=True)
@@ -145,9 +171,9 @@ def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     "--challenge",
     "value",
     envvar="ODMDM_CHALLENGE",
-    prompt="Challenge from Deploy App's MDM page",
+    prompt="Settings line or challenge from Deploy App's MDM page",
     hide_input=True,
-    help="The new window's challenge (default: ODMDM_CHALLENGE, else asked for)",
+    help="The new window's settings line or challenge (default: ODMDM_CHALLENGE, else asked for)",
 )
 @click.option("--template", "path", default=None, help="What to install (default: ODMDM_TEMPLATE)")
 @click.option("--mdm-url", default=None, help="Base URL of Fleet's API (default: ODMDM_MDM_URL)")
@@ -159,7 +185,7 @@ def challenge(  # pylint: disable=too-many-arguments,too-many-positional-argumen
 
     Every opening makes a new one. Only the certificate authority changes, so phones still
     installing apps are left alone. Asked for rather than taken as an argument, so it stays out of
-    shell history.
+    shell history. Given the whole settings line, its SCEP URL must be on this deployment's domain.
     """
     wanted = _template(ctx, path, domain)
     if not wanted:
@@ -168,16 +194,20 @@ def challenge(  # pylint: disable=too-many-arguments,too-many-positional-argumen
         click.echo("The template states no certificate, so there is no authority to give it to", err=True)
         ctx.exit(1)
         return
+    window = _window(ctx, value, domain or config.DOMAIN)
+    if not window:
+        return
     fleet = _fleet(ctx, mdm_url)
     if not fleet:
         return
     try:
-        fleet.ensure_authority(wanted.certificate.authority, f"https://{domain or config.DOMAIN}/scep", value)
+        fleet.ensure_authority(wanted.certificate.authority, window[0], window[1])
     except FleetError as exc:
         click.echo(f"Fleet refused: {exc}", err=True)
         ctx.exit(1)
         return
-    click.echo(f"{wanted.certificate.authority} has the new challenge")
+    until = f". The enrolment window is open until {window[2]}" if window[2] else ""
+    click.echo(f"{wanted.certificate.authority} has the new challenge{until}")
     ctx.exit(0)
 
 

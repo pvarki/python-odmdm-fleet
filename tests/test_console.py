@@ -4,6 +4,7 @@ An operator runs these by hand, so a missing setting has to say what is missing 
 to say why, rather than end in a traceback.
 """
 
+import datetime
 import json
 from pathlib import Path
 
@@ -11,7 +12,7 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
-from odmdm_connector import config
+from odmdm_connector import config, console
 from odmdm_connector import fleet as fleet_module
 from odmdm_connector.console import cli_group
 
@@ -623,3 +624,83 @@ def test_a_batch_stopped_half_way_says_which_phones_are_named(fleet: _Fleet, mon
     assert "Fleet refused: POST /api/latest/fleet/hosts/32/certificates/81/resend answered 500" in result.output
     assert "Already named before it stopped: 31=OTTER1 32=OTTER2. phones shows where each is" in result.output
     assert _named(fleet) == {31: "OTTER1", 32: "OTTER2", 33: ""}
+
+
+LINE = (Path(__file__).parent / "data" / "settings-line-v1.txt").read_text(encoding="utf-8").strip()
+SECRET = "0123456789abcdef0123456789abcdef"  # pragma: allowlist secret
+
+
+@pytest.fixture
+def window(fleet: _Fleet, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Fleet:
+    """The stub Fleet, a template, the vector's domain, and a clock before its window closes"""
+    _template(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "DOMAIN", "unit.example.fi")
+    monkeypatch.setattr(console, "_now", lambda: datetime.datetime(2026, 11, 21, 12, 0, tzinfo=datetime.UTC))
+    return fleet
+
+
+@pytest.mark.parametrize(
+    ("arguments", "typed", "env"),
+    [
+        ([], LINE + "\n", {}),
+        (["--challenge", LINE], None, {}),
+        ([], None, {"ODMDM_CHALLENGE": LINE}),
+    ],
+)
+def test_challenge_takes_the_settings_line(
+    window: _Fleet, caplog: pytest.LogCaptureFixture, arguments: list[str], typed: str | None, env: dict[str, str]
+) -> None:
+    """Typed at the hidden prompt, given as an option or from the environment"""
+    result = CliRunner().invoke(cli_group, ["-vv", "challenge", *arguments], input=typed, env=env)
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines()[-1] == (
+        "RMSCEP has the new challenge. The enrolment window is open until 2026-11-21 14:00 UTC"
+    )
+    assert window.authorities[0]["challenge"] == SECRET
+    assert window.authorities[0]["url"] == "https://unit.example.fi/scep"
+    assert SECRET not in result.output
+    assert SECRET not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("line", "says"),
+    [
+        (LINE.replace("unit.example.fi", "other.example.fi"), "is for other.example.fi, not unit.example.fi"),
+        (LINE.replace("https://", "http://"), "must start with https://"),
+        (LINE.replace("2026-11-21T14", "2026-11-21T11"), "closed at 2026-11-21T11:00:00Z"),
+        (LINE.replace("ODMDM1", "ODMDM2"), "not a settings line"),
+        (LINE.replace("ODMDM1", "odmdm1"), "not a settings line"),
+        (LINE.split(None, 1)[1], "not a settings line"),
+        ('"' + LINE + '"', "not a settings line"),
+    ],
+)
+def test_challenge_refuses_a_line_it_cannot_use(window: _Fleet, line: str, says: str) -> None:
+    """Before Fleet is asked anything, and without the challenge in the message"""
+    result = CliRunner().invoke(cli_group, ["challenge"], input=line + "\n")
+
+    assert result.exit_code == 1
+    assert says in result.output
+    assert SECRET not in result.output
+    assert not window.calls
+
+
+def test_apply_takes_the_settings_line_from_the_environment(window: _Fleet, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ODMDM_CHALLENGE may hold the line; apply must not send the whole line as the challenge"""
+    monkeypatch.setattr(config, "CHALLENGE", LINE)
+
+    result = CliRunner().invoke(cli_group, ["apply"])
+
+    assert result.exit_code == 0, result.output
+    assert window.authorities[0]["challenge"] == SECRET
+    assert SECRET not in result.output
+
+
+def test_apply_refuses_a_line_for_another_deployment(window: _Fleet, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "CHALLENGE", LINE.replace("unit.example.fi", "other.example.fi"))
+
+    result = CliRunner().invoke(cli_group, ["apply"])
+
+    assert result.exit_code == 1
+    assert "is for other.example.fi" in result.output
+    assert not window.calls

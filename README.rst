@@ -24,8 +24,8 @@ them, and each gets its certificate once it has a name.
 
        odmdm-connector apply
 
-2. Open enrolment in Deploy App (**User management → MDM**) and give Fleet the new challenge. It
-   asks for it, and changes nothing else::
+2. Open enrolment in Deploy App (**User management → MDM**), copy its settings line or its
+   challenge, and give Fleet the new challenge. It asks for it, and changes nothing else::
 
        odmdm-connector challenge
 
@@ -100,8 +100,8 @@ All configuration is via environment variables:
     The deployment's DNS name.
 
 ``ODMDM_CHALLENGE``
-    The challenge on Deploy App's MDM page, for ``challenge`` and a first ``apply``. New for every
-    enrolment window.
+    The settings line or the bare challenge from Deploy App's MDM page, for ``challenge`` and a
+    first ``apply``. New for every enrolment window.
 
 ``ODMDM_KEY_ALIAS``
     The certificate template's name, which becomes the Android keystore alias. Default ``rmscep``,
@@ -130,6 +130,28 @@ for an identity.
 The tool also refuses a policy that lets an app use the key without being named in
 ``packageNames``, lets the user pick a key for any app (``privateKeySelectionEnabled``), or
 allows installs from unknown sources (``untrustedAppsPolicy`` other than ``DISALLOW_INSTALL``).
+
+The settings line
+-----------------
+
+Deploy App's MDM page copies one line for the connector. It is the same for every MDM, and it
+carries no list of names: phones are named in the MDM. Version 1 is exactly four fields
+separated by whitespace::
+
+    ODMDM1 https://unit.example.fi/scep 0123456789abcdef0123456789abcdef 2026-11-21T14:00:00Z
+
+1. The mark ``ODMDM1``.
+2. The SCEP URL. It must be https.
+3. The challenge: 32 lowercase hex characters. It is a secret, and the tool never prints or logs it.
+4. When the enrolment window closes, in UTC, as ``YYYY-MM-DDTHH:MM:SSZ``.
+
+Whitespace and line breaks before and after the line are ignored. A line with another mark or
+another number of fields, a URL that is not https, a malformed challenge or time, or a window that
+has already closed is refused. A value with whitespace inside it is read as a line, never as a
+bare challenge, so a damaged paste is refused instead of being sent to Fleet. ``challenge`` takes
+the line at its prompt, from ``--challenge`` or from ``ODMDM_CHALLENGE``, refuses one whose SCEP
+URL is not on ``ODMDM_DOMAIN``, and says until when the window is open. The line above is the
+shared test vector, in ``tests/data/settings-line-v1.txt``.
 
 The order that works
 --------------------
