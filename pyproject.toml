@@ -21,6 +21,9 @@ repository = "https://github.com/pvarki/python-odmdm-fleet"
 [project.scripts]
 odmdm-connector = "odmdm_connector.console:odmdm_connector_cli"
 
+[project.entry-points."odmdm_connector.mdm"]
+fleet = "odmdm_connector.fleet_plugin:FleetPlugin"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0,<9.0",
