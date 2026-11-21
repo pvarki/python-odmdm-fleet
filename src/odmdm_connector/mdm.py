@@ -5,7 +5,8 @@ satisfies Mdm, published under the entry point group ``odmdm_connector.mdm``. Th
 the class's API_VERSION before it uses it.
 
 Every sentence a plugin hands back, a Step's message, a line from name or ask_again, an MdmError,
-is shown to the operator as it is. The SCEP challenge is never in one.
+is shown to the operator as it is, by the command line and the window alike, so it names no
+command, option or button. The SCEP challenge is never in one.
 """
 
 from collections.abc import Iterator, Mapping, Sequence
@@ -59,6 +60,8 @@ class Field:
     """A setup value a plugin needs, such as its MDM's address
 
     A secret is never taken from an option or a plain environment variable, only from a file.
+    A required one must be given: the window does not connect without it, and the command line
+    says how to give it.
     """
 
     key: str
@@ -66,6 +69,9 @@ class Field:
     secret: bool = False
     default: str = ""
     help: str = ""
+    required: bool = False
+    #: Rarely changed: the window shows it only when asked
+    advanced: bool = False
 
 
 @dataclass(frozen=True)
@@ -82,13 +88,22 @@ class MdmError(Exception):
 
     named holds the phones a batch had already named when it stopped, by id, so the operator names
     only the rest. lines holds the lines already due to the operator when it stopped, such as which
-    old callsign to revoke, shown before the error.
+    old callsign to revoke, shown before the error. unauthorized says the MDM did not accept the
+    secret it was given, such as an expired token: the connector then lets go of it and asks for it
+    again.
     """
 
-    def __init__(self, message: str, named: Mapping[str, str] | None = None, lines: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        message: str,
+        named: Mapping[str, str] | None = None,
+        lines: Sequence[str] = (),
+        unauthorized: bool = False,
+    ) -> None:
         super().__init__(message)
         self.named: dict[str, str] = dict(named or {})
         self.lines: list[str] = list(lines)
+        self.unauthorized = unauthorized
 
 
 class Mdm(Protocol):

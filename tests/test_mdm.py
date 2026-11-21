@@ -20,3 +20,9 @@ def test_every_state_is_a_sentence_and_every_capability_is_named() -> None:
     assert all(state.value and state.value == state.value.strip() for state in mdm.State)
     assert set(mdm.CAPABILITIES) == {"setup", "set_challenge", "ask_again"}
     assert mdm.API_VERSION == 1
+
+
+def test_a_field_is_shown_unless_marked_advanced() -> None:
+    """The window hides a field marked advanced until asked; the command line takes it as any other"""
+    assert not mdm.Field("team", "Team").advanced
+    assert mdm.Field("key_alias", "Key alias", advanced=True).advanced
