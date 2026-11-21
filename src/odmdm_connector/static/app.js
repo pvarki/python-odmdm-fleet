@@ -39,6 +39,9 @@ function el(tag, props, ...children) {
 }
 
 const h1 = (text) => el("h1", {}, text);
+// A Deploy App's name in a title, kept whole with the punctuation after it: it moves to the next line
+// as one, and breaks inside only when it is wider than the line by itself
+const named = (name, after = "") => el("span", { class: "name" }, name, after);
 const lead = (text) => (text ? el("p", { class: "lead" }, text) : null);
 // A button is known by its text, so that it keeps the focus when the view is drawn again
 const button = (props, text) => {
@@ -424,7 +427,7 @@ const CARDS = {
       step: renew ? null : 0,
       back: S.connections.length ? { text: "Back", action: flow.back || home } : null,
       parts: [
-        h1(renew ? `New settings for Deploy App ${S.active}` : "Add your Deploy App"),
+        h1(renew ? ["New settings for Deploy App ", named(S.active)] : "Add your Deploy App"),
         notice ? el("p", { class: "muted" }, notice) : null,
         lead("On Deploy App's MDM page, press this button:"),
         // A picture of Deploy App's button, which the sentence above names: nothing to press here
@@ -466,7 +469,7 @@ const CARDS = {
     return {
       step: known ? null : 0,
       parts: [
-        h1(known ? `New settings for Deploy App ${host}` : `Add Deploy App ${host}?`),
+        h1(known ? ["New settings for Deploy App ", named(host)] : ["Add Deploy App ", named(host, "?")]),
         lead(until),
         main(known ? "Use the new settings" : `Add ${host}`, take),
         // Any web page can bring this card up for a Deploy App of its own
@@ -1126,7 +1129,7 @@ function settings() {
     open(
       "Settings",
       [
-        el("h3", { class: "sect" }, `${answer.title} for ${S.active}`),
+        el("h3", { class: "sect" }, `${answer.title} for `, named(S.active)),
         el(
           "dl",
           { class: "facts" },
@@ -1157,7 +1160,7 @@ function remove() {
     );
   const button = main("Remove", removing, false, "danger");
   const tell = open(
-    `Remove Deploy App ${host}?`,
+    ["Remove Deploy App ", named(host, "?")],
     [
       el(
         "p",

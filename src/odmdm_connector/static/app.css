@@ -59,6 +59,13 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+/* A Deploy App's name in a title: whole on its line, broken only when wider than the line */
+.name {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 h2 {
   font-size: 15px;
   margin: 8px 0 8px;
