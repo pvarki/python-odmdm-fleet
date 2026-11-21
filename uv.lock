@@ -714,7 +714,7 @@ wheels = [
 
 [[package]]
 name = "odmdm-connector"
-version = "0.1.0+261031"
+version = "1.0.0+261121"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
