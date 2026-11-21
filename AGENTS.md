@@ -13,6 +13,18 @@ Fleet. Keep it that way in both directions:
   needs handling is handled here.
 - No product knowledge in code. What a deployment installs arrives in the template.
 
+## Layout
+
+The command line knows an MDM only through one contract; Fleet is the plugin built in.
+
+- `src/odmdm_connector/mdm.py`: the contract (`Mdm`, `Phone`, `State`, `Field`, `Step`, `MdmError`),
+  standard library only.
+- `core.py`: the naming rules, the same for every MDM. `console.py`: the command line. Neither
+  imports anything from `fleet.py` or `fleet_plugin.py`: the command line loads the MDM chosen with
+  `--mdm` through the entry point group `odmdm_connector.mdm`.
+- `fleet_plugin.py`: Fleet behind the contract, registered in `pyproject.toml` as `fleet`. `fleet.py`:
+  Fleet's HTTP dialect. `template.py` and the shipped `template.json`: what a deployment's phones need.
+
 ## Facts measured against a live Fleet
 
 Comments in `fleet.py` say what each request shape and wait was measured against. Keep that habit:
@@ -36,9 +48,11 @@ strands every enrolled phone's key.
 ## Crown jewels
 
 - **The MDM API token** (today a Fleet global admin token): it can change what every enrolled
-  phone of every team installs and trusts. The only place that reads it is `_fleet` in
-  `src/odmdm_connector/console.py`, from the file `ODMDM_TOKEN_FILE` names; `FleetMdm` keeps it in
-  memory and sends it only as the `Authorization` header to the MDM URL.
+  phone of every team installs and trusts. The only place that reads it is `_values` in
+  `src/odmdm_connector/console.py`, from the file `ODMDM_TOKEN_FILE` names: a plugin field marked
+  secret is read only from the file `ODMDM_<KEY>_FILE` names, never from `--set` or a plain variable.
+  The chosen plugin gets it in memory; `FleetPlugin` hands it to `FleetMdm`, which sends it only as
+  the `Authorization` header to the MDM URL.
 - The tool never logs it, prints it, takes it as an option or argument, or writes it to a file.
   Keep it that way: no `--token` option, no token in an environment variable, no token in an error
   message. `.gitignore` ignores `*.token` so a token file in the checkout cannot be committed.

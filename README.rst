@@ -90,7 +90,10 @@ revoke.
 Configuration
 -------------
 
-All configuration is via environment variables:
+All configuration is via environment variables. ``--set KEY=VALUE`` before the command sets one
+of the MDM's own for one run, ``mdm_url``, ``team``, ``template`` or ``key_alias`` for Fleet, as
+does ``--mdm-url``, ``--team`` or ``--template`` after it. A secret, the token, is only ever read
+from the file its ``_FILE`` variable names:
 
 ``ODMDM_MDM_URL``
     Base URL of Fleet's API. Only https: the token goes with every request.
@@ -105,7 +108,7 @@ All configuration is via environment variables:
     The team phones enrol into and get the certificate in. Default ``Deploy App``.
 
 ``ODMDM_TEMPLATE``
-    The document saying what to install, see below.
+    The document saying what to install, see below. Default: the one shipped with the connector.
 
 ``ODMDM_DOMAIN``
     The deployment's DNS name.
