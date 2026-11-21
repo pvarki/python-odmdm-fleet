@@ -33,11 +33,11 @@ def test_numbering_goes_on_from_the_highest_in_use() -> None:
     ("wanted", "says"),
     [
         ([("a", "OTTER4")], ""),
-        ([("x", "OTTER4")], "host x is not in the team"),
-        ([("a", "OTTER4"), ("a", "OTTER5")], "host a is named twice"),
+        ([("x", "OTTER4")], "phone x is not in the group"),
+        ([("a", "OTTER4"), ("a", "OTTER5")], "phone a is named twice"),
         ([("a", "-OTTER")], "-OTTER: a callsign is 3-32 letters"),
         ([("a", "OTTER4"), ("b", "otter4")], "otter4 is given twice"),
-        ([("a", "otter9")], "otter9 already belongs to host c"),
+        ([("a", "otter9")], "otter9 already belongs to phone c"),
         ([("c", "otter9")], ""),
     ],
 )

@@ -53,37 +53,6 @@ class Phone:
     status: str
     detail: str
 
-    @property
-    def state(self) -> str:
-        """Where the certificate is, in words an operator can act on
-
-        The details matched are the ones seen on a live Fleet 4.90.1. A phone acts on a request at
-        its next check-in, every 15 minutes. After a failure a phone reports, Fleet asks again by
-        itself up to three times, and that request keeps the failure's detail while it waits.
-        """
-        if not self.status:
-            return "no certificate requested"
-        if self.status == "verified":
-            return "has its certificate"
-        if self.status == "failed":
-            return self._failure
-        waiting = "requested, waiting for the phone (up to 15 minutes)"
-        return f"{waiting}; last time: {self._failure}" if self.detail else waiting
-
-    @property
-    def _failure(self) -> str:
-        """What Fleet's detail on a failed request means"""
-        if "does not have an IDP user" in self.detail:
-            # Naming does not send the request again, so a name beside this detail was given without a resend
-            if self.callsign:
-                return "named, but its certificate was not asked for again: run resend"
-            return "waiting for a name"
-        if "SCEP enrollment failed" in self.detail:
-            return "refused by Deploy App: name taken or not allowed, enrolment closed, or Fleet has an old challenge"
-        if "Network error" in self.detail:
-            return "could not reach Deploy App"
-        return self.detail or "failed"
-
 
 def _moment(value: str) -> datetime.datetime:
     """A time Fleet wrote, as a time

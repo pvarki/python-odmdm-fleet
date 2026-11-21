@@ -1,9 +1,16 @@
-"""CLI entrypoints for odmdm-connector"""
+"""CLI entrypoints for odmdm-connector
+
+Knows the MDM only through the contract in mdm.py: the chosen MDM is the one entry point of the
+group odmdm_connector.mdm named by --mdm, Fleet being the one built in.
+"""
 
 import datetime
 import logging
-import re
+import os
+from collections.abc import Mapping
+from importlib.metadata import entry_points
 from pathlib import Path
+from typing import NoReturn
 from urllib.parse import urlparse
 
 import click
@@ -11,23 +18,38 @@ from libadvian.logging import init_logging
 
 from odmdm_connector import __version__
 
-from . import config, settings, template
-from .fleet import FleetError, FleetMdm, Phone
+from . import config, core, settings
+from .mdm import ASK_AGAIN, SET_CHALLENGE, SETUP, Field, Mdm, MdmError
+from .settings import Settings
 
 LOGGER = logging.getLogger(__name__)
 
-#: The deployment's rule for a device callsign, checked here only so a typo is refused now rather
-#: than as a failed certificate twenty minutes later. The deployment still decides.
-CALLSIGN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{1,30}[A-Za-z0-9]")
+#: Where MDM plugins are found, the built-in one among them
+GROUP = "odmdm_connector.mdm"
 
 
 @click.group()
 @click.version_option(version=__version__)
 @click.pass_context
 @click.option("-v", "--verbose", count=True, help="Shorthand for info/debug loglevel (-v/-vv)")
-def cli_group(ctx: click.Context, verbose: int) -> None:
-    """Connect FleetDM to an OpenDefence deployment's device enrolment"""
-    _ = ctx
+@click.option(
+    "--mdm",
+    "chosen",
+    envvar="ODMDM_MDM",
+    default="fleet",
+    show_default=True,
+    metavar="NAME",
+    help="The MDM to talk to (default: ODMDM_MDM, else fleet)",
+)
+@click.option(
+    "--set",
+    "given",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help="A setting of the MDM, such as mdm_url; never a secret, which is read from the file ODMDM_<KEY>_FILE names",
+)
+def cli_group(ctx: click.Context, verbose: int, chosen: str, given: tuple[str, ...]) -> None:
+    """Connect an MDM, Fleet built in, to an OpenDefence deployment's device enrolment"""
     loglevel = config.LOG_LEVEL
     if verbose == 1:
         loglevel = 20
@@ -35,8 +57,15 @@ def cli_group(ctx: click.Context, verbose: int) -> None:
         loglevel = 10
     init_logging(loglevel)
     LOGGER.setLevel(loglevel)
-    # One line per Fleet request buries what the command says; -vv brings them back
+    # One line per MDM request buries what the command says; -vv brings them back
     logging.getLogger("httpx").setLevel(max(loglevel, logging.WARNING) if verbose < 2 else loglevel)
+    sets: dict[str, str] = {}
+    for value in given:
+        key, equals, setting = value.partition("=")
+        if not key or not equals:
+            raise click.UsageError("--set takes KEY=VALUE")
+        sets[key] = setting
+    ctx.obj = {"mdm": chosen, "set": sets}
 
 
 def odmdm_connector_cli() -> None:
@@ -44,74 +73,101 @@ def odmdm_connector_cli() -> None:
     cli_group()  # pylint: disable=no-value-for-parameter
 
 
-def _fleet(ctx: click.Context, url: str | None) -> FleetMdm | None:
-    """Fleet's API, or None after saying what is missing"""
-    the_url = url or config.URL
-    if not the_url:
-        click.echo("Give --mdm-url or set ODMDM_MDM_URL", err=True)
-        ctx.exit(1)
-        return None
-    if urlparse(the_url).scheme != "https":
-        click.echo(
-            "The MDM address must start with https://, or the API token would cross the network readable", err=True
-        )
-        ctx.exit(1)
-        return None
-    if not config.TOKEN_FILE or not config.TOKEN_FILE.is_file():
-        click.echo("Set ODMDM_TOKEN_FILE to a file holding the Fleet API token", err=True)
-        ctx.exit(1)
-        return None
-    return FleetMdm(the_url, config.TOKEN_FILE.read_text(encoding="utf-8").strip())
+def _fail(ctx: click.Context, message: str) -> NoReturn:
+    click.echo(message, err=True)
+    ctx.exit(1)
 
 
-def _template(ctx: click.Context, path: str | None, domain: str | None) -> template.MdmTemplate | None:
-    """The deployment's template with its values filled in, or None after saying why not"""
-    the_path = Path(path) if path else config.TEMPLATE
-    the_domain = domain or config.DOMAIN
-    if not the_path or not the_domain:
-        click.echo("Give --template and --domain or set ODMDM_TEMPLATE and ODMDM_DOMAIN", err=True)
-        ctx.exit(1)
-        return None
+def _chosen(name: str) -> type[Mdm]:
+    """The class of the MDM of that name, loading that one entry point and no other"""
+    found = entry_points(group=GROUP, name=name)
+    if not found:
+        raise click.UsageError(f"No MDM named {name} is installed")
+    loaded: type[Mdm] = next(iter(found)).load()
+    return loaded
+
+
+def _values(name: str, fields: tuple[Field, ...], given: Mapping[str, str]) -> dict[str, str]:
+    """The fields' values: from --set, else ODMDM_<KEY>, else the default
+
+    A secret only ever from the file ODMDM_<KEY>_FILE names, so it stays out of shell history and
+    process environments. No value is ever in a message.
+    """
+    keys = sorted(item.key for item in fields)
+    unknown = sorted(set(given) - set(keys))
+    if unknown:
+        raise click.UsageError(f"{name} has no setting {unknown[0]}; it has {', '.join(keys)}")
+    values: dict[str, str] = {}
+    for item in fields:
+        env = f"ODMDM_{item.key.upper()}"
+        if item.secret:
+            if item.key in given:
+                raise click.UsageError(f"{item.key} is a secret: put it in a file and set {env}_FILE to that file")
+            path = os.environ.get(f"{env}_FILE", "")
+            values[item.key] = Path(path).read_text(encoding="utf-8").strip() if path and Path(path).is_file() else ""
+        else:
+            values[item.key] = given[item.key] if item.key in given else os.environ.get(env, item.default)
+    return values
+
+
+def _mdm(ctx: click.Context, capability: str = "", **shorthands: str | None) -> Mdm:
+    """The chosen MDM, configured; or the MDM's sentence for lacking the capability, and exit
+
+    The shorthands are the per-command options such as --team, each the same as --set team=...
+    """
+    name = str(ctx.obj["mdm"])
+    chosen = _chosen(name)
+    if capability in chosen.missing:
+        _fail(ctx, chosen.missing[capability])
+    given = {**ctx.obj["set"], **{key: value for key, value in shorthands.items() if value is not None}}
     try:
-        return template.load(the_path, domain=the_domain, key_alias=config.KEY_ALIAS)
-    except template.TemplateError as exc:
-        click.echo(f"Template refused: {exc}", err=True)
-        ctx.exit(1)
-        return None
+        return chosen(_values(name, chosen.fields, given))
+    except MdmError as exc:
+        _fail(ctx, str(exc))
+
+
+def _domain(ctx: click.Context, domain: str | None) -> str:
+    the_domain = domain or config.DOMAIN
+    if not the_domain:
+        _fail(ctx, "Give --domain or set ODMDM_DOMAIN")
+    return the_domain
 
 
 def _now() -> datetime.datetime:
     return datetime.datetime.now(datetime.UTC)
 
 
-def _window(ctx: click.Context, value: str, domain: str) -> tuple[str, str, str] | None:
-    """The SCEP URL, the challenge and until when the window is open, from a challenge or a settings line
+def _window(ctx: click.Context, value: str, domain: str) -> Settings:
+    """The enrolment window, from a settings line or a bare challenge, or exit after saying why not
 
-    None after saying why not. A bare challenge says nothing of the window. The challenge is never
-    in a message.
+    A bare challenge says nothing of when the window closes. The challenge is never in a message.
     """
     if not settings.is_line(value):
-        return f"https://{domain}/scep", value.strip(), ""
+        return Settings(f"https://{domain}/scep", value.strip())
     try:
         line = settings.parse(value, _now())
     except settings.SettingsError as exc:
-        click.echo(str(exc), err=True)
-        ctx.exit(1)
-        return None
+        _fail(ctx, str(exc))
     host = urlparse(line.scep_url).hostname or ""
     if host != domain.lower():
-        click.echo(f"The settings line is for {host}, not {domain}: copy it from this deployment's MDM page", err=True)
-        ctx.exit(1)
-        return None
-    return line.scep_url, line.challenge, f"{line.closes:%Y-%m-%d %H:%M} UTC"
+        _fail(ctx, f"The settings line is for {host}, not {domain}: copy it from this deployment's MDM page")
+    return line
+
+
+MDM_URL = click.option("--mdm-url", default=None, help="The MDM's address, as --set mdm_url (default: ODMDM_MDM_URL)")
+TEAM = click.option("--team", default=None, help="The team the phones are in, as --set team (default: ODMDM_TEAM)")
+TEMPLATE = click.option(
+    "--template", "path", default=None, help="What to install, as --set template (default: ODMDM_TEMPLATE)"
+)
+DOMAIN = click.option("--domain", default=None, help="The deployment's DNS name (default: ODMDM_DOMAIN)")
 
 
 @cli_group.command(name="apply")
 @click.pass_context
-@click.option("--template", "path", default=None, help="What to install (default: ODMDM_TEMPLATE)")
-@click.option("--mdm-url", default=None, help="Base URL of Fleet's API (default: ODMDM_MDM_URL)")
-@click.option("--team", default=None, help="The team devices get the certificate in (default: ODMDM_TEAM)")
-@click.option("--domain", default=None, help="The deployment's DNS name (default: ODMDM_DOMAIN)")
+@TEMPLATE
+@MDM_URL
+@TEAM
+@DOMAIN
 @click.option(
     "--force-policy", is_flag=True, help="Re-upload the policy even if unchanged, to reach a host that just joined"
 )
@@ -125,7 +181,7 @@ def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     force_policy: bool,
     dry_run: bool,
 ) -> None:
-    """Tell Fleet what this deployment's devices need
+    """Tell the MDM what this deployment's devices need
 
     Run it when a deployment is set up and whenever its template changes. A changed policy stops
     apps installing on phones that are enrolling at that moment, so a new enrolment window is
@@ -135,33 +191,16 @@ def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     device that has already joined will not pick up a template applied afterwards -- it has to
     enrol again, under a callsign that has not been spent.
     """
-    wanted = _template(ctx, path, domain)
-    if not wanted:
-        return
-    click.echo(f"Template names {len(wanted.apps)} apps, {len(wanted.preinstall_packages)} installed at enrolment")
-    for app in wanted.apps:
-        click.echo(f"  {app.package}{' (at enrolment)' if app.preinstall else ' (on demand)'}")
-    if wanted.link_app:
-        click.echo(f"  launcher link {wanted.link_app.title!r} -> {wanted.link_app.url}")
-    if dry_run:
-        ctx.exit(0)
-        return
-
-    window = _window(ctx, config.CHALLENGE, domain or config.DOMAIN)
-    if not window:
-        return
-    fleet = _fleet(ctx, mdm_url)
-    if not fleet:
-        return
+    the_domain = _domain(ctx, domain)
+    window = Settings(f"https://{the_domain}/scep", "") if dry_run else _window(ctx, config.CHALLENGE, the_domain)
+    mdm = _mdm(ctx, SETUP, mdm_url=mdm_url, team=team, template=path)
     try:
-        result = fleet.apply(
-            team or config.TEAM, wanted, force_policy=force_policy, scep_url=window[0], challenge=window[1]
-        )
-    except FleetError as exc:
-        click.echo(f"Fleet refused: {exc}", err=True)
-        ctx.exit(1)
-        return
-    click.echo(f"Applied to team {result['team_id']}: {len(result['assigned'])} apps assigned")
+        for step in mdm.setup(window, force=force_policy, dry_run=dry_run):
+            click.echo(step.label if step.done else f"{step.label} (not done)")
+            if step.message:
+                click.echo(step.message)
+    except MdmError as exc:
+        _fail(ctx, str(exc))
     ctx.exit(0)
 
 
@@ -171,129 +210,62 @@ def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     "--challenge",
     "value",
     envvar="ODMDM_CHALLENGE",
-    prompt="Settings line or challenge from Deploy App's MDM page",
-    hide_input=True,
+    default=None,
     help="The new window's settings line or challenge (default: ODMDM_CHALLENGE, else asked for)",
 )
-@click.option("--template", "path", default=None, help="What to install (default: ODMDM_TEMPLATE)")
-@click.option("--mdm-url", default=None, help="Base URL of Fleet's API (default: ODMDM_MDM_URL)")
-@click.option("--domain", default=None, help="The deployment's DNS name (default: ODMDM_DOMAIN)")
+@TEMPLATE
+@MDM_URL
+@DOMAIN
 def challenge(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    ctx: click.Context, value: str, path: str | None, mdm_url: str | None, domain: str | None
+    ctx: click.Context, value: str | None, path: str | None, mdm_url: str | None, domain: str | None
 ) -> None:
-    """Give Fleet the challenge of the enrolment window just opened
+    """Give the MDM the challenge of the enrolment window just opened
 
     Every opening makes a new one. Only the certificate authority changes, so phones still
     installing apps are left alone. Asked for rather than taken as an argument, so it stays out of
     shell history. Given the whole settings line, its SCEP URL must be on this deployment's domain.
     """
-    wanted = _template(ctx, path, domain)
-    if not wanted:
-        return
-    if not wanted.certificate:
-        click.echo("The template states no certificate, so there is no authority to give it to", err=True)
-        ctx.exit(1)
-        return
-    window = _window(ctx, value, domain or config.DOMAIN)
-    if not window:
-        return
-    fleet = _fleet(ctx, mdm_url)
-    if not fleet:
-        return
+    the_domain = _domain(ctx, domain)
+    mdm = _mdm(ctx, SET_CHALLENGE, mdm_url=mdm_url, template=path)
+    if value is None:
+        value = str(click.prompt("Settings line or challenge from Deploy App's MDM page", hide_input=True))
+    window = _window(ctx, value, the_domain)
     try:
-        fleet.ensure_authority(wanted.certificate.authority, window[0], window[1])
-    except FleetError as exc:
-        click.echo(f"Fleet refused: {exc}", err=True)
-        ctx.exit(1)
-        return
-    until = f". The enrolment window is open until {window[2]}" if window[2] else ""
-    click.echo(f"{wanted.certificate.authority} has the new challenge{until}")
+        mdm.set_challenge(window)
+    except MdmError as exc:
+        _fail(ctx, str(exc))
+    until = f". The enrolment window is open until {window.closes:%Y-%m-%d %H:%M} UTC" if window.closes else ""
+    click.echo(f"{mdm.title} has the new challenge{until}")
     ctx.exit(0)
 
 
 @cli_group.command(name="phones")
 @click.pass_context
-@click.option("--mdm-url", default=None, help="Base URL of Fleet's API (default: ODMDM_MDM_URL)")
-@click.option("--team", default=None, help="The team the phones are in (default: ODMDM_TEAM)")
+@MDM_URL
+@TEAM
 def phones(ctx: click.Context, mdm_url: str | None, team: str | None) -> None:
     """List the team's phones and where each one's certificate is
 
-    One line each: the host id that name and resend take, the callsign, the model, the day it
+    One line each: the id that name and resend take, the callsign, the model, the day it
     enrolled, and the certificate in plain words.
     """
-    fleet = _fleet(ctx, mdm_url)
-    if not fleet:
-        return
+    mdm = _mdm(ctx, mdm_url=mdm_url, team=team)
     try:
-        found = fleet.phones(fleet.team_id(team or config.TEAM), config.KEY_ALIAS)
-    except FleetError as exc:
-        click.echo(f"Fleet refused: {exc}", err=True)
-        ctx.exit(1)
-        return
+        found = mdm.phones()
+    except MdmError as exc:
+        _fail(ctx, str(exc))
     for phone in found:
-        click.echo(f"{phone.id:<5} {phone.callsign or '-':<12} {phone.model:<26} {phone.enrolled[:10]}  {phone.state}")
+        click.echo(
+            f"{phone.id:<5} {phone.callsign or '-':<12} {phone.model:<26} {phone.joined[:10]}  {core.said(phone)}"
+        )
     if not found:
         click.echo("No phones in the team")
     ctx.exit(0)
 
 
-def _pairs(values: tuple[str, ...]) -> list[tuple[int, str]]:
-    """HOST=CALLSIGN arguments, as host ids and callsigns"""
-    pairs = []
-    for value in values:
-        host, _, callsign = value.partition("=")
-        if not host.isdigit() or not callsign:
-            raise click.UsageError(f"{value!r} is not HOST=CALLSIGN, the host being the id that phones prints")
-        pairs.append((int(host), callsign))
-    return pairs
-
-
-def _numbered(found: list[Phone], prefix: str, start: int | None) -> list[tuple[int, str]]:
-    """PREFIX<n> for every phone without a name, in enrolment order
-
-    Numbered from start, else from one above the highest PREFIX<n> already in the team.
-    """
-    if start is None:
-        used = (re.fullmatch(re.escape(prefix) + r"(\d+)", phone.callsign, re.IGNORECASE) for phone in found)
-        start = max((int(match.group(1)) for match in used if match), default=0) + 1
-    waiting = [phone.id for phone in found if not phone.callsign]
-    return [(host, f"{prefix}{start + n}") for n, host in enumerate(waiting)]
-
-
-def _refusal(found: dict[int, Phone], wanted: list[tuple[int, str]]) -> str:
-    """Why these names cannot all be given, or empty when they can
-
-    Callsigns are compared without case, as the deployment compares them.
-    """
-    hosts: set[int] = set()
-    callsigns: set[str] = set()
-    for host, callsign in wanted:
-        if host not in found:
-            return f"host {host} is not in the team"
-        if host in hosts:
-            return f"host {host} is named twice"
-        if not CALLSIGN.fullmatch(callsign):
-            return f"{callsign}: a callsign is 3-32 letters, digits or hyphens, and does not start or end with a hyphen"
-        if callsign.lower() in callsigns:
-            return f"{callsign} is given twice"
-        owner = next((p.id for p in found.values() if p.id != host and p.callsign.lower() == callsign.lower()), 0)
-        if owner:
-            return f"{callsign} already belongs to host {owner}"
-        hosts.add(host)
-        callsigns.add(callsign.lower())
-    return ""
-
-
-def _policy_again(fleet: FleetMdm, team_id: int, found: dict[int, Phone]) -> None:
-    """Send the policy again if a phone enrolled after it was last sent, as Fleet may have overwritten it there"""
-    later = fleet.resend_policy(team_id, list(found.values()))
-    if later:
-        click.echo(f"Policy sent again: {later} phone{'' if later == 1 else 's'} enrolled after it was last sent")
-
-
 @cli_group.command(name="name")
 @click.pass_context
-@click.argument("pairs", nargs=-1, metavar="[HOST=CALLSIGN]...")
+@click.argument("pairs", nargs=-1, metavar="[ID=CALLSIGN]...")
 @click.option(
     "--all",
     "prefix",
@@ -308,8 +280,8 @@ def _policy_again(fleet: FleetMdm, team_id: int, found: dict[int, Phone]) -> Non
     default=None,
     help="The first n for --all (default: one above the highest in use)",
 )
-@click.option("--mdm-url", default=None, help="Base URL of Fleet's API (default: ODMDM_MDM_URL)")
-@click.option("--team", default=None, help="The team the phones are in (default: ODMDM_TEAM)")
+@MDM_URL
+@TEAM
 def name(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     ctx: click.Context,
     pairs: tuple[str, ...],
@@ -318,110 +290,78 @@ def name(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     mdm_url: str | None,
     team: str | None,
 ) -> None:
-    """Name phones, and have Fleet send them certificates
+    """Name phones, and have the MDM send them certificates
 
-    HOST=CALLSIGN for as many phones as you like, in any order, the host being the id that phones
-    prints. Or --all PREFIX, which numbers every phone that has no name yet. Each phone gets its
-    certificate at its next check-in, within about 15 minutes. A phone that already has its
-    certificate under the name is left alone.
+    ID=CALLSIGN for as many phones as you like, in any order, the id being what phones prints. Or
+    --all PREFIX, which numbers every phone that has no name yet. Each phone gets its certificate
+    at its next check-in, within about 15 minutes. A phone that already has its certificate under
+    the name is left alone.
 
     Nothing is changed if a name is not a callsign, is given twice or belongs to another phone in
-    the team, or if a host is not in the team.
+    the team, or if a phone is not in the team.
 
-    The team's policy is sent again, to every phone in it, if a phone enrolled after it was last
-    sent, because Fleet can overwrite a new phone's policy. So name phones once every phone in the
+    With Fleet, the team's policy is sent again, to every phone in it, if a phone enrolled after it
+    was last sent, because Fleet can overwrite a new phone's policy. So name phones once every phone in the
     team has its apps.
     """
     if bool(pairs) == bool(prefix) or (start is not None and not prefix):
-        raise click.UsageError("Give HOST=CALLSIGN for each phone, or --all PREFIX")
-    wanted = _pairs(pairs)
-    fleet = _fleet(ctx, mdm_url)
-    if not fleet:
-        return
-    named: list[str] = []
+        raise click.UsageError("Give ID=CALLSIGN for each phone, or --all PREFIX")
     try:
-        team_id = fleet.team_id(team or config.TEAM)
-        found = {phone.id: phone for phone in fleet.phones(team_id, config.KEY_ALIAS)}
+        wanted = core.pairs(pairs)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    mdm = _mdm(ctx, mdm_url=mdm_url, team=team)
+    try:
+        found = mdm.phones()
         if prefix:
-            wanted = _numbered(list(found.values()), prefix, start)
-        refused = _refusal(found, wanted)
+            wanted = core.numbered(found, prefix, start)
+        refused = core.refusal(found, wanted)
         if refused:
-            click.echo(f"Nothing named: {refused}", err=True)
-            ctx.exit(1)
-            return
+            _fail(ctx, f"Nothing named: {refused}")
         if not wanted:
             click.echo("Nothing to name")
             ctx.exit(0)
-            return
-        template = fleet.certificate_template(team_id, config.KEY_ALIAS)
-        for host, callsign in wanted:
-            old = found[host]
-            # Asked again under the name it holds, it is refused as taken: a working phone then shows as refused
-            if old.status == "verified" and old.callsign.lower() == callsign.lower():
-                click.echo(f"Host {host} is already {old.callsign}")
-                continue
-            fleet.name_host(host, callsign)
-            named.append(f"{host}={callsign}")
-            if old.status:
-                fleet.resend(host, template)
-            line = f"Host {host} is {callsign}"
-            if not old.status:
-                line += ". Fleet has no certificate request for it, so nothing was sent"
-            elif old.status == "verified" and old.callsign:
-                line += f". It was {old.callsign} and still has that certificate: revoke {old.callsign} in Deploy App."
+        lines = mdm.name(dict(wanted))
+    except MdmError as exc:
+        for line in exc.lines:
             click.echo(line)
-        if named:
-            _policy_again(fleet, team_id, found)
-    except FleetError as exc:
-        click.echo(f"Fleet refused: {exc}", err=True)
-        if named:
-            click.echo(f"Already named before it stopped: {' '.join(named)}. phones shows where each is", err=True)
+        click.echo(str(exc), err=True)
+        if exc.named:
+            done = " ".join(f"{phone}={callsign}" for phone, callsign in exc.named.items())
+            click.echo(f"Already named before it stopped: {done}. phones shows where each is", err=True)
         ctx.exit(1)
-        return
+    for line in lines:
+        click.echo(line)
     ctx.exit(0)
 
 
 @cli_group.command(name="resend")
 @click.pass_context
-@click.argument("hosts", nargs=-1, type=int)
-@click.option("--mdm-url", default=None, help="Base URL of Fleet's API (default: ODMDM_MDM_URL)")
-@click.option("--team", default=None, help="The team the phones are in (default: ODMDM_TEAM)")
-def resend(ctx: click.Context, hosts: tuple[int, ...], mdm_url: str | None, team: str | None) -> None:
-    """Have Fleet send phones their certificate requests again
+@click.argument("ids", nargs=-1)
+@MDM_URL
+@TEAM
+def resend(ctx: click.Context, ids: tuple[str, ...], mdm_url: str | None, team: str | None) -> None:
+    """Have phones ask for their certificates again
 
     For a refused phone once the cause is fixed, such as enrolment opened again and its new
-    challenge given to Fleet. A taken name is not one of those: Deploy App never frees a name, so
-    give the phone another with name, which sends the request itself. Without host ids, every phone
+    challenge given to the MDM. A taken name is not one of those: Deploy App never frees a name, so
+    give the phone another with name, which sends the request itself. Without ids, every phone
     that has a name and whose certificate failed. Each acts on it at its next check-in, within
     about 15 minutes.
 
-    A host id is asked whatever its state. A phone that has its certificate asks again under the
+    An id is asked whatever its state. A phone that has its certificate asks again under the
     name it holds and is refused, and reads as refused from then on though that certificate still
     works. As with name, the team's policy is sent again if a phone enrolled after it was last sent.
     """
-    fleet = _fleet(ctx, mdm_url)
-    if not fleet:
-        return
+    mdm = _mdm(ctx, ASK_AGAIN, mdm_url=mdm_url, team=team)
     try:
-        team_id = fleet.team_id(team or config.TEAM)
-        found = {phone.id: phone for phone in fleet.phones(team_id, config.KEY_ALIAS)}
-        unknown = [host for host in hosts if host not in found]
-        if unknown:
-            click.echo(f"Nothing sent: host {unknown[0]} is not in the team", err=True)
-            ctx.exit(1)
-            return
-        chosen = list(hosts) or [phone.id for phone in found.values() if phone.status == "failed" and phone.callsign]
-        if not chosen:
-            click.echo("Nothing to resend")
-            ctx.exit(0)
-            return
-        template = fleet.certificate_template(team_id, config.KEY_ALIAS)
-        for host in chosen:
-            fleet.resend(host, template)
-            click.echo(f"Host {host} ({found[host].callsign or 'no name'}): certificate asked for again")
-        _policy_again(fleet, team_id, found)
-    except FleetError as exc:
-        click.echo(f"Fleet refused: {exc}", err=True)
-        ctx.exit(1)
-        return
+        lines = mdm.ask_again(list(ids))
+    except MdmError as exc:
+        for line in exc.lines:
+            click.echo(line)
+        _fail(ctx, str(exc))
+    for line in lines:
+        click.echo(line)
+    if not lines:
+        click.echo("Nothing to resend")
     ctx.exit(0)

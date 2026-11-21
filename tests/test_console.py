@@ -15,6 +15,7 @@ from click.testing import CliRunner
 from odmdm_connector import config, console
 from odmdm_connector import fleet as fleet_module
 from odmdm_connector.console import cli_group
+from odmdm_connector.fleet_plugin import FleetPlugin
 
 from .test_fleet import _Fleet, _host, _mdm
 
@@ -30,9 +31,9 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Fleet:
     """
     token = tmp_path / "token"
     token.write_text("token\n", encoding="utf-8")
-    monkeypatch.setattr(config, "URL", "https://mdm.test")
-    monkeypatch.setattr(config, "TOKEN_FILE", token)
-    monkeypatch.setattr(config, "TEAM", "rmscep")
+    monkeypatch.setenv("ODMDM_MDM_URL", "https://mdm.test")
+    monkeypatch.setenv("ODMDM_TOKEN_FILE", str(token))
+    monkeypatch.setenv("ODMDM_TEAM", "rmscep")
     stub = _Fleet()
     stub.certificates = [{"id": 81, "name": "rmscep", "subject_name": NAMED, "certificate_authority_id": 3}]
     stub.profiles = [
@@ -49,14 +50,14 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Fleet:
 
 
 @pytest.mark.parametrize("command", [["apply"], ["challenge", "--challenge", "new-window"]])
-def test_a_template_and_domain_are_required(command: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
-    """Without them there is nothing to state to Fleet"""
-    monkeypatch.setattr(config, "TEMPLATE", None)
+def test_a_domain_is_required(command: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without it there is nothing to state to Fleet; the template defaults to the one shipped"""
+    monkeypatch.setattr(config, "DOMAIN", "")
 
     result = CliRunner().invoke(cli_group, command)
 
     assert result.exit_code == 1
-    assert "ODMDM_TEMPLATE" in result.output
+    assert "ODMDM_DOMAIN" in result.output
 
 
 def _template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -71,7 +72,7 @@ def _template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(config, "TEMPLATE", path)
+    monkeypatch.setenv("ODMDM_TEMPLATE", str(path))
     monkeypatch.setattr(config, "DOMAIN", "example.fi")
 
 
@@ -115,7 +116,7 @@ def test_a_new_window_touches_only_the_authority(
 
 def test_phones_needs_somewhere_to_ask(monkeypatch: pytest.MonkeyPatch) -> None:
     """No Fleet configured is a sentence, not a traceback"""
-    monkeypatch.setattr(config, "URL", "")
+    monkeypatch.delenv("ODMDM_MDM_URL", raising=False)
 
     result = CliRunner().invoke(cli_group, ["phones"])
 
@@ -136,15 +137,35 @@ UNREACHED = "Network error during SCEP enrollment: Failed to communicate with SC
     [
         ("", "", "no certificate requested"),
         ("failed", NO_NAME, "named, but its certificate was not asked for again: run resend"),
-        ("pending", "", "requested, waiting for the phone (up to 15 minutes)"),
-        ("delivering", "", "requested, waiting for the phone (up to 15 minutes)"),
-        ("delivered", "", "requested, waiting for the phone (up to 15 minutes)"),
-        ("pending", REFUSED, "requested, waiting for the phone (up to 15 minutes); last time: refused by Deploy App"),
-        ("delivered", UNREACHED, "waiting for the phone (up to 15 minutes); last time: could not reach Deploy App"),
+        ("pending", "", "requested, waiting for the phone: up to 15 minutes"),
+        ("delivering", "", "requested, waiting for the phone: up to 15 minutes"),
+        ("delivered", "", "requested, waiting for the phone: up to 15 minutes"),
+        (
+            "pending",
+            REFUSED,
+            (
+                "requested, waiting for the phone: up to 15 minutes; last time: refused by Deploy App: "
+                "name taken or not allowed, enrolment closed, or Fleet has an old challenge"
+            ),
+        ),
+        (
+            "delivered",
+            UNREACHED,
+            "requested, waiting for the phone: up to 15 minutes; last time: could not reach Deploy App",
+        ),
         ("verified", "", "has its certificate"),
-        ("failed", REFUSED, "refused by Deploy App: name taken or not allowed, enrolment closed, or Fleet has an old"),
+        (
+            "failed",
+            REFUSED,
+            "refused by Deploy App: name taken or not allowed, enrolment closed, or Fleet has an old challenge",
+        ),
         ("failed", UNREACHED, "could not reach Deploy App"),
-        ("failed", "Something Fleet says that nobody has seen yet", "Something Fleet says that nobody has seen yet"),
+        ("failed", "", "failed"),
+        (
+            "failed",
+            "Something Fleet says that nobody has seen yet",
+            "failed: Something Fleet says that nobody has seen yet",
+        ),
     ],
 )
 def test_phones_says_where_each_certificate_is(fleet: _Fleet, status: str, detail: str, says: str) -> None:
@@ -155,8 +176,7 @@ def test_phones_says_where_each_certificate_is(fleet: _Fleet, status: str, detai
 
     assert result.exit_code == 0, result.output
     assert result.output.split()[:4] == ["31", "OTTER4", "Google", "sdk_gphone64_arm64"]
-    assert "2026-11-01" in result.output
-    assert says in result.output
+    assert result.output.rstrip("\n").split("2026-11-01  ", 1)[1] == says
 
 
 def test_a_phone_fresh_from_enrolment_waits_for_a_name(fleet: _Fleet) -> None:
@@ -305,10 +325,10 @@ def test_name_all_with_every_phone_named_names_nothing(fleet: _Fleet) -> None:
         (["31=OTTER-"], "OTTER-: a callsign is 3-32 letters"),
         (["--all", "O"], "O1: a callsign is 3-32 letters"),
         (["31=OTTER4", "32=otter4"], "otter4 is given twice"),
-        (["31=OTTER4", "31=OTTER5"], "host 31 is named twice"),
-        (["31=otter9"], "otter9 already belongs to host 33"),
-        (["--all", "OTTER", "--start", "9"], "OTTER9 already belongs to host 33"),
-        (["31=OTTER4", "99=OTTER5"], "host 99 is not in the team"),
+        (["31=OTTER4", "31=OTTER5"], "phone 31 is named twice"),
+        (["31=otter9"], "otter9 already belongs to phone 33"),
+        (["--all", "OTTER", "--start", "9"], "OTTER9 already belongs to phone 33"),
+        (["31=OTTER4", "99=OTTER5"], "phone 99 is not in the group"),
     ],
 )
 def test_name_changes_nothing_unless_every_name_can_be_given(fleet: _Fleet, arguments: list[str], says: str) -> None:
@@ -574,7 +594,7 @@ def test_an_unknown_team_is_named_not_created(fleet: _Fleet, command: list[str])
 
 def test_the_mdm_address_must_be_https(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch) -> None:
     """The token goes with every request, so it must not cross the network readable"""
-    monkeypatch.setattr(config, "URL", "http://mdm.test")
+    monkeypatch.setenv("ODMDM_MDM_URL", "http://mdm.test")
 
     result = CliRunner().invoke(cli_group, ["phones"])
 
@@ -626,6 +646,48 @@ def test_a_batch_stopped_half_way_says_which_phones_are_named(fleet: _Fleet, mon
     assert _named(fleet) == {31: "OTTER1", 32: "OTTER2", 33: ""}
 
 
+def test_a_rename_stopped_half_way_still_says_what_to_revoke(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing shows the old callsign afterwards, so its line must not be lost with the error"""
+    answer = fleet.handler
+
+    def refusing(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/hosts/32/certificates/81/resend"):
+            return httpx.Response(500, text="database is locked")
+        return answer(request)
+
+    monkeypatch.setattr(fleet, "handler", refusing)
+    _mdm(fleet, monkeypatch)
+    fleet.hosts = [_host(31, "verified", "OTTER3"), _host(32, "failed", detail=NO_NAME)]
+
+    result = CliRunner().invoke(cli_group, ["name", "31=OTTER4", "32=OTTER5"])
+
+    assert result.exit_code == 1
+    assert result.stdout.splitlines() == [
+        "Host 31 is OTTER4. It was OTTER3 and still has that certificate: revoke OTTER3 in Deploy App."
+    ]
+    assert "Fleet refused: POST /api/latest/fleet/hosts/32/certificates/81/resend answered 500" in result.output
+
+
+def test_a_resend_stopped_half_way_says_what_was_asked(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The phones asked before the error are said as on success"""
+    answer = fleet.handler
+
+    def refusing(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/hosts/34/certificates/81/resend"):
+            return httpx.Response(500, text="database is locked")
+        return answer(request)
+
+    monkeypatch.setattr(fleet, "handler", refusing)
+    _mdm(fleet, monkeypatch)
+    fleet.hosts = [_host(31, "failed", "OTTER31", REFUSED), _host(34, "failed", "OTTER34", REFUSED)]
+
+    result = CliRunner().invoke(cli_group, ["resend"])
+
+    assert result.exit_code == 1
+    assert result.stdout.splitlines() == ["Host 31 (OTTER31): certificate asked for again"]
+    assert "Fleet refused: POST /api/latest/fleet/hosts/34/certificates/81/resend answered 500" in result.output
+
+
 LINE = (Path(__file__).parent / "data" / "settings-line-v1.txt").read_text(encoding="utf-8").strip()
 SECRET = "0123456789abcdef0123456789abcdef"  # pragma: allowlist secret
 
@@ -655,7 +717,7 @@ def test_challenge_takes_the_settings_line(
 
     assert result.exit_code == 0, result.output
     assert result.stdout.splitlines()[-1] == (
-        "RMSCEP has the new challenge. The enrolment window is open until 2026-11-21 14:00 UTC"
+        "Fleet has the new challenge. The enrolment window is open until 2026-11-21 14:00 UTC"
     )
     assert window.authorities[0]["challenge"] == SECRET
     assert window.authorities[0]["url"] == "https://unit.example.fi/scep"
@@ -704,3 +766,75 @@ def test_apply_refuses_a_line_for_another_deployment(window: _Fleet, monkeypatch
     assert result.exit_code == 1
     assert "is for other.example.fi" in result.output
     assert not window.calls
+
+
+@pytest.mark.parametrize(
+    ("options", "env", "says"),
+    [
+        (["--mdm", "nope"], {}, "No MDM named nope is installed"),
+        ([], {"ODMDM_MDM": "nope"}, "No MDM named nope is installed"),
+        (["--set", "nope=1"], {}, "fleet has no setting nope; it has key_alias, mdm_url, team, template, token"),
+        (["--set", "team"], {}, "--set takes KEY=VALUE"),
+        (["--set", f"token={SECRET}"], {}, "token is a secret: put it in a file and set ODMDM_TOKEN_FILE"),
+    ],
+)
+def test_the_mdm_and_its_settings_are_checked_first(
+    fleet: _Fleet, options: list[str], env: dict[str, str], says: str
+) -> None:
+    """Before the MDM is asked anything, and without a value in the message"""
+    result = CliRunner().invoke(cli_group, [*options, "phones"], env=env)
+
+    assert result.exit_code == 2
+    assert says in result.output
+    assert SECRET not in result.output
+    assert not fleet.calls
+
+
+def test_set_gives_an_mdm_setting(fleet: _Fleet) -> None:
+    """The same as the command's own shorthand, here --team"""
+    result = CliRunner().invoke(cli_group, ["--set", "team=Typo", "phones"])
+
+    assert result.exit_code == 1
+    assert "no team named Typo" in result.output
+
+
+def test_a_secret_is_never_read_from_a_plain_variable(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only from the file its _FILE variable names"""
+    monkeypatch.delenv("ODMDM_TOKEN_FILE")
+
+    result = CliRunner().invoke(cli_group, ["phones"], env={"ODMDM_TOKEN": "token"})
+
+    assert result.exit_code == 1
+    assert "Set ODMDM_TOKEN_FILE" in result.output
+    assert not fleet.calls
+
+
+@pytest.mark.parametrize(
+    ("command", "capability"),
+    [(["challenge"], "set_challenge"), (["apply"], "setup"), (["resend"], "ask_again")],
+)
+def test_a_capability_the_mdm_lacks_is_its_sentence(
+    fleet: _Fleet, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: list[str], capability: str
+) -> None:
+    """Said instead of calling the MDM, and before a challenge is asked for"""
+    _template(tmp_path, monkeypatch)
+    monkeypatch.setattr(FleetPlugin, "missing", {capability: "Paste the challenge in the MDM's console by hand"})
+
+    result = CliRunner().invoke(cli_group, command)
+
+    assert result.exit_code == 1
+    assert result.output == "Paste the challenge in the MDM's console by hand\n"
+    assert not fleet.calls
+
+
+def test_a_dry_run_needs_no_mdm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The template shipped with the connector, checked with nothing configured but the domain"""
+    for setting in ("MDM_URL", "TOKEN_FILE", "TEMPLATE"):
+        monkeypatch.delenv(f"ODMDM_{setting}", raising=False)
+    monkeypatch.setattr(config, "DOMAIN", "example.fi")
+
+    result = CliRunner().invoke(cli_group, ["apply", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines()[0] == "Template names 3 apps, 3 installed at enrolment"
+    assert result.stdout.splitlines()[-1] == "  launcher link 'Deploy App' -> https://mtls.example.fi/"

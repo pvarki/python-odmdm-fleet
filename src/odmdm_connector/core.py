@@ -43,16 +43,21 @@ def refusal(phones: Sequence[Phone], wanted: Sequence[tuple[str, str]]) -> str:
     callsigns: set[str] = set()
     for phone, callsign in wanted:
         if phone not in found:
-            return f"host {phone} is not in the team"
+            return f"phone {phone} is not in the group"
         if phone in ids:
-            return f"host {phone} is named twice"
+            return f"phone {phone} is named twice"
         if not CALLSIGN.fullmatch(callsign):
             return f"{callsign}: a callsign is 3-32 letters, digits or hyphens, and does not start or end with a hyphen"
         if callsign.lower() in callsigns:
             return f"{callsign} is given twice"
         owner = next((p.id for p in phones if p.id != phone and p.callsign.lower() == callsign.lower()), "")
         if owner:
-            return f"{callsign} already belongs to host {owner}"
+            return f"{callsign} already belongs to phone {owner}"
         ids.add(phone)
         callsigns.add(callsign.lower())
     return ""
+
+
+def said(phone: Phone) -> str:
+    """Where the phone's certificate is, as the operator reads it: the state, then the plugin's words"""
+    return f"{phone.state.value}: {phone.detail}" if phone.detail else phone.state.value
