@@ -38,8 +38,11 @@ It opens the page in your default browser and prints its address, and goes on un
 ``--port N`` serves it on another port than 8737. The browser does not open by itself on a computer
 without a desktop, with ``--no-browser``, or when the default browser may not read the connector's
 own folder, as a browser installed as a snap on Linux cannot: then open the address it prints
-yourself. A page opened without that address says so, and goes on by itself once the address has
-been opened in the same browser. Deploy App's button finds the page only in the browser where the
+yourself. On a Mac whose ``.html`` files open in another program than the browser, the connector's
+file may open there instead; on Linux without a graphical opener, a text browser may take the
+terminal. In both cases start it with ``--no-browser`` and open the printed address. A page opened
+without that address says so, and goes on by itself once the address has been opened in the same
+browser. Deploy App's button finds the page only in the browser where the
 address was opened, so use Deploy App in your default browser, or open the address in the browser
 you use Deploy App in.
 
@@ -95,9 +98,10 @@ What guards the page:
   once the connector accepts it, so that a page elsewhere cannot put a wrong one in its place, and
   sends it with each request in a header of its own, never in a cookie, which a browser would also send to every
   other program listening on this computer.
-- The address never goes to another program: to open the browser, the connector writes a small file
-  that leads on to it into its own folder, which only you can read, and hands the browser that
-  file. The file holds the key while the connector runs and is removed when it stops.
+- The address is never on another program's command line, where other users of the computer could
+  read it: to open the browser, the connector writes a small file that leads on to it into its own
+  folder, which only you can read, and the browser gets the address through that file. The file
+  holds the key while the connector runs and is removed when it stops.
 - The browser keeps exactly one thing, that key, in the page's own storage, so that every tab of
   the page has it. It is worthless once the connector stops. Nothing else is ever kept there. The
   browser's history also keeps the address you opened, key and all; that matters only while the
