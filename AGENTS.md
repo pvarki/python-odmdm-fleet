@@ -40,7 +40,11 @@ feature is not a reason to shell out.
 
 The one exception, decided by the owner on 2026-11-21: `web` opens the page in the default browser
 through `src/odmdm_connector/browser.py`, the only module ruff lets import `webbrowser`
-(`per-file-ignores` in `pyproject.toml`); it starts nothing else. The address holds the page's key,
+(`per-file-ignores` in `pyproject.toml`); it starts nothing else. Ruff cannot exempt one API, so
+that entry lifts every ban in the file: there `tests/test_no_processes.py`, not ruff, holds the rule.
+It reads `browser.py` without importing it and fails on any import but `html`, `logging`, `os`, `sys`,
+`webbrowser` and `pathlib`, on any `os` function that starts a process, and on anything of
+`webbrowser` but `open` and `Error`. The address holds the page's key,
 and on Linux and macOS a program's arguments can be read by other users of the computer, so the
 address never goes to the opener: `browser.py` writes `open-page.html` into `store.directory()`,
 mode 0600, which leads on to the address, and hands the opener that file's `file:` URI. Without a

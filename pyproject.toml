@@ -57,6 +57,8 @@ extend-select = ["TID251", "S102", "S307"]
 "tests/test_no_processes.py" = ["TID251"]
 # The one exception, decided by the owner: the web command opens the page in the default browser.
 # The address goes through a file only the user can read, so the key is in no program's arguments.
+# Ruff cannot exempt one API, so this lifts every ban here: tests/test_no_processes.py, not ruff,
+# holds the rule inside browser.py: six modules, no os process start, of webbrowser open and Error.
 "src/odmdm_connector/browser.py" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
