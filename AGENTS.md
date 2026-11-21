@@ -38,6 +38,16 @@ The connector starts no process and runs no code it was given: ruff bans `subpro
 `conftest.py` at the root makes every way to start a process raise for the whole test run. A missing
 feature is not a reason to shell out.
 
+The one exception, decided by the owner on 2026-11-21: `web` opens the page in the default browser
+through `src/odmdm_connector/browser.py`, the only module ruff lets import `webbrowser`
+(`per-file-ignores` in `pyproject.toml`); it starts nothing else. The address holds the page's key,
+and on Linux and macOS a program's arguments can be read by other users of the computer, so the
+address never goes to the opener: `browser.py` writes `open-page.html` into `store.directory()`,
+mode 0600, which leads on to the address, and hands the opener that file's `file:` URI. Without a
+desktop (no `DISPLAY` or `WAYLAND_DISPLAY` outside Windows and macOS) it opens nothing, as
+`webbrowser` would start a text browser in the terminal. Tests replace the opener with a fake;
+`conftest.py` still makes `webbrowser.open` raise in every test.
+
 ## One dependency: keyring, for the token
 
 Runtime code under `src/` imports nothing but Python's standard library and the package itself,
@@ -116,7 +126,9 @@ giving callsigns, one phone, the settings and removing a Deploy App. Keep these 
 - Known limits: the button in Deploy App talks to whatever listens on port 8737 of this computer,
   so on a computer shared with other users the settings line is copied by hand instead. Another
   program on this computer can slow the page down, but cannot read or drive it without the key.
-- The connector opens no browser; `web` prints the address.
+- `web` opens the page in the default browser through `browser.py` only, and prints the address;
+  `--no-browser` only prints it. Deploy App's button finds the page only in the browser where the
+  address was opened.
 
 ## Facts measured against a live Fleet
 
@@ -165,4 +177,6 @@ strands every enrolled phone's key.
   so the MDM. `app.js` takes it out of the address, keeps it in `localStorage` only once
   `/api/state` accepts it (any web page can send the browser to the address with a wrong one), and
   sends it only as the `X-ODMDM-Key` header to the page's own `/api/`. Never log it, never put it in
-  an answer, never in a cookie or a query.
+  an answer, never in a cookie, a query or another program's arguments.
+- **`open-page.html`** in `store.directory()`: it holds the address, key and all, while the
+  connector runs, so it is written mode 0600 and removed in the `web` command's `finally`.

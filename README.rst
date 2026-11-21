@@ -30,14 +30,18 @@ Manager, the macOS Keychain, or the Secret Service on Linux.
 The page
 --------
 
-The connector's everyday face is a page in your browser, served by this computer. Start it, and
-open the address it prints::
+The connector's everyday face is a page in your browser, served by this computer. Start it::
 
     odmdm-connector web
 
-It goes on until Ctrl+C. ``--port N`` serves it on another port than 8737. The connector starts no
-browser: open the address yourself. A page opened without it says so, and goes on by itself once the
-address has been opened in the same browser.
+It opens the page in your default browser and prints its address, and goes on until Ctrl+C.
+``--port N`` serves it on another port than 8737. The browser does not open by itself on a computer
+without a desktop, with ``--no-browser``, or when the default browser may not read the connector's
+own folder, as a browser installed as a snap on Linux cannot: then open the address it prints
+yourself. A page opened without that address says so, and goes on by itself once the address has
+been opened in the same browser. Deploy App's button finds the page only in the browser where the
+address was opened, so use Deploy App in your default browser, or open the address in the browser
+you use Deploy App in.
 
 The first time, the page sets up one thing at a time, on cards under a bar of three parts: Deploy
 App, the MDM, Connect. Have at hand Deploy App's MDM page, open as an admin, your MDM's address and
@@ -91,6 +95,9 @@ What guards the page:
   once the connector accepts it, so that a page elsewhere cannot put a wrong one in its place, and
   sends it with each request in a header of its own, never in a cookie, which a browser would also send to every
   other program listening on this computer.
+- The address never goes to another program: to open the browser, the connector writes a small file
+  that leads on to it into its own folder, which only you can read, and hands the browser that
+  file. The file holds the key while the connector runs and is removed when it stops.
 - The browser keeps exactly one thing, that key, in the page's own storage, so that every tab of
   the page has it. It is worthless once the connector stops. Nothing else is ever kept there. The
   browser's history also keeps the address you opened, key and all; that matters only while the
