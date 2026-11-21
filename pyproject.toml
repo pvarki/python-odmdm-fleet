@@ -34,6 +34,9 @@ dev = [
     "tox-uv>=1.0,<2.0",
     "ruff>=0.15.12",
 ]
+dist = [
+    "pyinstaller>=6.22,<7",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -97,6 +100,11 @@ extend-select = ["TID251", "S102", "S307"]
 strict=true
 # The demo plugin's tests import it from its source, as pytest does, and the manifest's test from packaging
 mypy_path="examples/odmdm-connector-demo/src:packaging"
+
+# A build tool, in the dist group only, and without type hints
+[[tool.mypy.overrides]]
+module="PyInstaller.*"
+ignore_missing_imports=true
 
 [[tool.mypy.overrides]]
 module="tests.*"
