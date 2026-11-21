@@ -2,14 +2,13 @@
 
 import datetime
 
-import httpx
 import pytest
 
 from odmdm_connector.fleet_plugin import FleetPlugin
 from odmdm_connector.mdm import Mdm, MdmError, State
 from odmdm_connector.settings import Settings
 
-from .test_fleet import _Fleet, _host, _mdm
+from .test_fleet import Request, Response, _Fleet, _host, _mdm
 
 NO_NAME = "Could not replace certificate variables: host 6f1c does not have an IDP user for variable FLEET_VAR_X"
 REFUSED = "SCEP enrollment failed: Enrollment failed with SCEP failInfo: badMessageCheck"
@@ -36,7 +35,7 @@ def _plugin(**values: str) -> Mdm:
         ("", "", "", State.NO_REQUEST, ""),
         ("verified", "OTTER4", "", State.READY, ""),
         ("failed", "", NO_NAME, State.NEEDS_NAME, ""),
-        ("failed", "OTTER4", NO_NAME, State.NOT_ASKED, "run resend"),
+        ("failed", "OTTER4", NO_NAME, State.NOT_ASKED, "ask again"),
         ("failed", "OTTER4", REFUSED, State.REFUSED, "name taken or not allowed"),
         ("failed", "OTTER4", UNREACHED, State.UNREACHABLE, ""),
         ("failed", "OTTER4", "Something new", State.FAILED, "Something new"),
@@ -68,8 +67,8 @@ def test_name_answers_its_lines_and_reads_the_phones_once(fleet: _Fleet) -> None
     lines = _plugin().name({"32": "OTTER5", "31": "OTTER4"})
 
     assert lines == [
-        "Host 32 is OTTER5. Fleet has no certificate request for it, so nothing was sent",
-        "Host 31 is OTTER4",
+        "Phone 32 is OTTER5. Fleet has no certificate request for it, so nothing was sent",
+        "Phone 31 is OTTER4",
     ]
     assert _listings(fleet) == 1
 
@@ -101,9 +100,9 @@ def test_an_id_not_in_the_team_changes_nothing(fleet: _Fleet, call: str) -> None
 def test_a_batch_stopped_half_way_names_the_phones_named(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch) -> None:
     answer = fleet.handler
 
-    def refusing(request: httpx.Request) -> httpx.Response:
+    def refusing(request: Request) -> Response:
         if request.url.path.endswith("/hosts/32/certificates/81/resend"):
-            return httpx.Response(500, text="database is locked")
+            return Response(500, text="database is locked")
         return answer(request)
 
     monkeypatch.setattr(fleet, "handler", refusing)
@@ -114,14 +113,48 @@ def test_a_batch_stopped_half_way_names_the_phones_named(fleet: _Fleet, monkeypa
         _plugin().name({"31": "OTTER1", "32": "OTTER2", "33": "OTTER3"})
 
     assert raised.value.named == {"31": "OTTER1", "32": "OTTER2"}
+    assert not raised.value.unauthorized
+
+
+def test_a_token_fleet_does_not_accept_is_marked(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch) -> None:
+    """So the connector lets go of it and asks for it again"""
+    monkeypatch.setattr(fleet, "handler", lambda request: Response(401, json={"message": "Authentication required"}))
+    _mdm(fleet, monkeypatch)
+
+    with pytest.raises(MdmError, match="Fleet refused: the API token is not accepted") as raised:
+        _plugin().phones()
+
+    assert raised.value.unauthorized
+
+
+def test_a_token_refused_while_the_policy_is_replaced_is_marked(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The token ended between deleting the old policy and uploading the new one"""
+    answer = fleet.handler
+
+    def refusing(request: Request) -> Response:
+        if request.method == "POST" and request.url.path.endswith("/configuration_profiles"):
+            return Response(401, json={"message": "Authentication required"})
+        return answer(request)
+
+    monkeypatch.setattr(fleet, "handler", refusing)
+    _mdm(fleet, monkeypatch)
+    fleet.hosts = [_host(31, "failed", detail=NO_NAME, enrolled="2026-11-21T09:00:00Z")]
+    fleet.profiles = [
+        {"name": "rmscep-policy", "profile_uuid": "g4bb", "created_at": "2026-11-20T21:02:44Z", "raw": {}}
+    ]
+
+    with pytest.raises(MdmError, match="was being replaced in team 7 and may now be missing") as raised:
+        _plugin().name({"31": "OTTER1"})
+
+    assert raised.value.unauthorized
 
 
 @pytest.mark.parametrize(
     ("values", "says"),
     [
-        ({"mdm_url": ""}, "ODMDM_MDM_URL"),
+        ({"mdm_url": ""}, "The Fleet address is missing"),
         ({"mdm_url": "http://mdm.test"}, "must start with https://"),
-        ({"token": ""}, "ODMDM_TOKEN_FILE"),
+        ({"token": ""}, "The Fleet API token is missing"),
     ],
 )
 def test_fleet_is_reached_only_when_configured(fleet: _Fleet, values: dict[str, str], says: str) -> None:
@@ -142,3 +175,18 @@ def test_ask_again_without_ids_and_nobody_failed_answers_nothing(fleet: _Fleet) 
 
     assert _plugin().ask_again([]) == []
     assert not [method for method, _ in fleet.calls if method != "GET"]
+
+
+def test_the_template_and_key_alias_are_advanced() -> None:
+    """Rarely changed, and the key alias never for a deployment: the window shows them only when asked"""
+    assert [item.key for item in FleetPlugin.fields if item.advanced] == ["template", "key_alias"]
+
+
+def test_the_token_help_says_which_token_lasts() -> None:
+    """The token My account gives ends after some days, and the refusal then says so"""
+    [token] = [each for each in FleetPlugin.fields if each.key == "token"]
+
+    assert token.help == (
+        "A global admin's API token: in Fleet, My account, Get API token. That one ends after some days; "
+        "an API-only user's does not."
+    )

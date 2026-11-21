@@ -3,14 +3,13 @@
 from collections.abc import Mapping, Sequence
 from typing import ClassVar
 
-import httpx
 import pytest
 
 from odmdm_connector.fleet_plugin import FleetPlugin
 from odmdm_connector.mdm import CAPABILITIES, Mdm, MdmError, Phone, State
 from odmdm_connector.testing import FakeMdm, contract
 
-from .test_fleet import _Fleet, _host, _mdm
+from .test_fleet import Request, Response, _Fleet, _host, _mdm
 
 NO_NAME = "Could not replace certificate variables: host 6f1c does not have an IDP user for variable FLEET_VAR_X"
 CHECKS = pytest.mark.parametrize("check", contract.CHECKS, ids=lambda check: check.__name__)
@@ -30,6 +29,7 @@ def fleet(monkeypatch: pytest.MonkeyPatch) -> contract.Factory:
 
     def factory(refuse_after: int | None = None) -> Mdm:
         stub = _Fleet()
+        stub.authorities = [{"id": 3, "name": "RMSCEP", "url": contract.WINDOW.scep_url}]
         stub.certificates = [{"id": 81, "name": "rmscep", "subject_name": "CN=$X", "certificate_authority_id": 3}]
         stub.hosts = [
             _host(31, "failed", detail=NO_NAME),
@@ -39,10 +39,10 @@ def fleet(monkeypatch: pytest.MonkeyPatch) -> contract.Factory:
         answer = stub.handler
         named: list[str] = []
 
-        def refusing(request: httpx.Request) -> httpx.Response:
+        def refusing(request: Request) -> Response:
             if request.url.path.endswith("/device_mapping"):
                 if refuse_after is not None and len(named) >= refuse_after:
-                    return httpx.Response(500, text="database is locked")
+                    return Response(500, text="database is locked")
                 named.append(request.url.path)
             return answer(request)
 

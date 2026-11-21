@@ -11,7 +11,7 @@ from typing import ClassVar
 from urllib.parse import urlparse
 
 from . import template
-from .fleet import FleetError, FleetMdm
+from .fleet import FleetError, FleetMdm, Unauthorized
 from .fleet import Phone as FleetPhone
 from .mdm import API_VERSION, Field, MdmError, Phone, State, Step
 from .settings import Settings
@@ -43,7 +43,7 @@ def _failure(phone: FleetPhone) -> tuple[State, str]:
     """What Fleet's detail on a failed request means"""
     if "does not have an IDP user" in phone.detail:
         # Naming does not send the request again, so a name beside this detail was given without a resend
-        return (State.NOT_ASKED, "run resend") if phone.callsign else (State.NEEDS_NAME, "")
+        return (State.NOT_ASKED, "ask again") if phone.callsign else (State.NEEDS_NAME, "")
     if "SCEP enrollment failed" in phone.detail:
         return State.REFUSED, "name taken or not allowed, enrolment closed, or Fleet has an old challenge"
     if "Network error" in phone.detail:
@@ -52,26 +52,41 @@ def _failure(phone: FleetPhone) -> tuple[State, str]:
     return State.FAILED, phone.detail
 
 
+def _refused(exc: FleetError, named: Mapping[str, str] | None = None, lines: Sequence[str] = ()) -> MdmError:
+    """Fleet's refusal as the contract's, marked when Fleet does not accept the token"""
+    return MdmError(f"Fleet refused: {exc}", named, lines, unauthorized=isinstance(exc, Unauthorized))
+
+
 class FleetPlugin:
     """FleetDM, one team per Deploy App"""
 
     API_VERSION: ClassVar[int] = API_VERSION
     title: ClassVar[str] = "Fleet"
     fields: ClassVar[tuple[Field, ...]] = (
-        Field("mdm_url", "Fleet address", help="Base URL of Fleet's API, https only"),
+        Field("mdm_url", "Fleet address", help="The address you open Fleet at, starting with https://", required=True),
         Field(
             "token",
             "API token",
             secret=True,
-            help="A Fleet API token. Giving Fleet a challenge needs a global admin's",
+            help=(
+                "A global admin's API token: in Fleet, My account, Get API token. That one ends after some days; "
+                "an API-only user's does not."
+            ),
+            required=True,
         ),
         Field("team", "Team", default="Deploy App", help="The team phones enrol into and get the certificate in"),
-        Field("template", "Template", help="A template file; without one, the one shipped with the connector"),
+        Field(
+            "template",
+            "Template",
+            help="A template file; without one, the one shipped with the connector",
+            advanced=True,
+        ),
         Field(
             "key_alias",
             "Key alias",
             default="rmscep",
             help="The certificate template's name, the Android keystore alias. Never change it for a deployment",
+            advanced=True,
         ),
     )
     missing: ClassVar[Mapping[str, str]] = {}
@@ -91,13 +106,13 @@ class FleetPlugin:
         if self._api:
             return self._api
         if not self._url:
-            raise MdmError("Give --mdm-url or set ODMDM_MDM_URL")
+            raise MdmError("The Fleet address is missing")
         if urlparse(self._url).scheme != "https":
             raise MdmError(
                 "The MDM address must start with https://, or the API token would cross the network readable"
             )
         if not self._token:
-            raise MdmError("Set ODMDM_TOKEN_FILE to a file holding the Fleet API token")
+            raise MdmError("The Fleet API token is missing")
         self._api = FleetMdm(self._url, self._token)
         return self._api
 
@@ -129,18 +144,18 @@ class FleetPlugin:
                 self.team, wanted, force_policy=force, scep_url=window.scep_url, challenge=window.challenge
             )
         except FleetError as exc:
-            raise MdmError(f"Fleet refused: {exc}") from exc
+            raise _refused(exc) from exc
         yield Step(f"Applied to team {result['team_id']}: {len(result['assigned'])} apps assigned", True)
 
     def set_challenge(self, window: Settings) -> None:
-        """Repoint the template's certificate authority, and change nothing else"""
+        """Give the template's certificate authority the window's challenge, and change nothing else"""
         wanted = self._template(window)
         if not wanted.certificate:
             raise MdmError("The template states no certificate, so there is no authority to give it to")
         try:
             self._fleet().ensure_authority(wanted.certificate.authority, window.scep_url, window.challenge)
         except FleetError as exc:
-            raise MdmError(f"Fleet refused: {exc}") from exc
+            raise _refused(exc) from exc
 
     def _phones(self) -> dict[str, FleetPhone]:
         """The team's phones by id, read now: never kept between calls, so nothing shown is stale"""
@@ -149,7 +164,7 @@ class FleetPlugin:
             self._team_id = api.team_id(self.team)
             return {str(phone.id): phone for phone in api.phones(self._team_id, self.key_alias)}
         except FleetError as exc:
-            raise MdmError(f"Fleet refused: {exc}") from exc
+            raise _refused(exc) from exc
 
     def phones(self) -> list[Phone]:
         return [
@@ -182,13 +197,13 @@ class FleetPlugin:
             for key, callsign in names.items():
                 old = found[key]
                 if old.status == "verified" and old.callsign.lower() == callsign.lower():
-                    lines.append(f"Host {key} is already {old.callsign}")
+                    lines.append(f"Phone {key} is already {old.callsign}")
                     continue
                 api.name_host(old.id, callsign)
                 named[key] = callsign
                 if old.status:
                     api.resend(old.id, certificate)
-                line = f"Host {key} is {callsign}"
+                line = f"Phone {key} is {callsign}"
                 if not old.status:
                     line += ". Fleet has no certificate request for it, so nothing was sent"
                 elif old.status == "verified" and old.callsign:
@@ -199,7 +214,7 @@ class FleetPlugin:
             if named:
                 lines += self._policy_again(found)
         except FleetError as exc:
-            raise MdmError(f"Fleet refused: {exc}", named, lines) from exc
+            raise _refused(exc, named, lines) from exc
         return lines
 
     def ask_again(self, ids: Sequence[str]) -> list[str]:
@@ -217,8 +232,8 @@ class FleetPlugin:
             certificate = api.certificate_template(self._team_id, self.key_alias)
             for key in chosen:
                 api.resend(found[key].id, certificate)
-                lines.append(f"Host {key} ({found[key].callsign or 'no name'}): certificate asked for again")
+                lines.append(f"Phone {key} ({found[key].callsign or 'no name'}): certificate asked for again")
             lines += self._policy_again(found)
         except FleetError as exc:
-            raise MdmError(f"Fleet refused: {exc}", lines=lines) from exc
+            raise _refused(exc, lines=lines) from exc
         return lines

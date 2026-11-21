@@ -27,8 +27,7 @@ class DemoMdm:
     )
     missing: ClassVar[Mapping[str, str]] = {
         SET_CHALLENGE: (
-            "The demo MDM takes no challenge by API: paste it in its console under "
-            "Certificates > SCEP > Challenge, then run phones"
+            "The demo MDM takes no challenge by API: paste it in its console under Certificates > SCEP > Challenge"
         ),
     }
 
