@@ -46,6 +46,42 @@ jobs:
       - name: Test with pytest, coverage floor in pyproject.toml
         run: uv run pytest -v
 
+  # A plugin is a package of its own, found through its entry point once installed: build both
+  # wheels and install them the way an operator would, into a throwaway tool directory.
+  plugin-install:
+    name: Install with a plugin (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pvarki/config-ci-library/.github/actions/setup-python@fffb737257f6a08b0bbd03aa8f9e090cc610e7b6 # v0.15.0+261104
+        with:
+          python-version: "3.12"
+      - name: Build both wheels and install them as a tool
+        env:
+          UV_TOOL_DIR: ${{ runner.temp }}/uv-tools
+          UV_TOOL_BIN_DIR: ${{ runner.temp }}/uv-bin
+        run: |
+          uv build --out-dir dist
+          uv build --out-dir dist examples/odmdm-connector-demo
+          uv tool install dist/odmdm_connector-*.whl --with dist/odmdm_connector_demo-*.whl
+          echo "$UV_TOOL_BIN_DIR" >> "$GITHUB_PATH"
+      - name: Fleet is built in, the demo is found as a plugin and used
+        run: |
+          odmdm-connector mdms | tr -d '\r' | tr -s ' ' | tee mdms.txt
+          grep -Eqx 'fleet odmdm-connector [^ ]+ built in' mdms.txt
+          grep -Fqx 'demo odmdm-connector-demo 1.0.0 plugin' mdms.txt
+          odmdm-connector --mdm demo phones 2> plugin.txt | tee phones.txt
+          cat plugin.txt
+          grep -Fq 'a plugin from odmdm-connector-demo 1.0.0' plugin.txt
+          grep -Eq '^d1 +- +Pretend Phone 7' phones.txt
+
   snyk-test:
     name: Run Snyk test
     runs-on: ubuntu-latest
