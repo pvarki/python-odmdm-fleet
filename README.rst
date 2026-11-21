@@ -164,19 +164,6 @@ What Fleet does that you would not guess
   challenge. A taken name is never freed, not even by revoking it, so give the phone another with
   ``name``. For the challenge, ``challenge`` and then ``resend``.
 
-Docker
-------
-
-The ``production`` target runs the CLI::
-
-    docker build --ssh default --target production -t odmdm-connector:latest .
-    docker run --rm -e ODMDM_MDM_URL -e ODMDM_TOKEN_FILE=/run/token \
-      -v "$PWD/fleet.token:/run/token:ro" -v "$PWD/template.json:/run/template.json:ro" \
-      -e ODMDM_TEMPLATE=/run/template.json -e ODMDM_DOMAIN \
-      odmdm-connector:latest odmdm-connector apply
-
-For the test suite in docker use the ``tox`` target, and for a development shell ``devel_shell``.
-
 Development
 -----------
 
