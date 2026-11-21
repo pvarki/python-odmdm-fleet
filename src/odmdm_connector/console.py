@@ -3,6 +3,7 @@
 import logging
 import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 import click
 from libadvian.logging import init_logging
@@ -47,6 +48,12 @@ def _fleet(ctx: click.Context, url: str | None) -> FleetMdm | None:
     the_url = url or config.URL
     if not the_url:
         click.echo("Give --mdm-url or set ODMDM_MDM_URL", err=True)
+        ctx.exit(1)
+        return None
+    if urlparse(the_url).scheme != "https":
+        click.echo(
+            "The MDM address must start with https://, or the API token would cross the network readable", err=True
+        )
         ctx.exit(1)
         return None
     if not config.TOKEN_FILE or not config.TOKEN_FILE.is_file():

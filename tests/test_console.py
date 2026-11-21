@@ -568,3 +568,14 @@ def test_an_unknown_team_is_named_not_created(fleet: _Fleet, command: list[str])
     assert result.exit_code == 1
     assert "no team named Typo" in result.output
     assert not _changes(fleet)
+
+
+def test_the_mdm_address_must_be_https(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The token goes with every request, so it must not cross the network readable"""
+    monkeypatch.setattr(config, "URL", "http://mdm.test")
+
+    result = CliRunner().invoke(cli_group, ["phones"])
+
+    assert result.exit_code == 1
+    assert "must start with https://" in result.output
+    assert not fleet.calls

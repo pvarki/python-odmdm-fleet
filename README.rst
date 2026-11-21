@@ -82,7 +82,7 @@ Configuration
 All configuration is via environment variables:
 
 ``ODMDM_MDM_URL``
-    Base URL of Fleet's API.
+    Base URL of Fleet's API. Only https: the token goes with every request.
 
 ``ODMDM_TOKEN_FILE``
     A file holding the Fleet API token. Changing the certificate authority's challenge needs a
