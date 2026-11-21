@@ -57,7 +57,7 @@ extend-select = ["TID251", "S102", "S307"]
 
 [tool.ruff.lint.per-file-ignores]
 # The guard that makes those raise during the tests, and its test
-"tests/conftest.py" = ["TID251"]
+"conftest.py" = ["TID251"]
 "tests/test_no_processes.py" = ["TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]

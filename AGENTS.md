@@ -35,7 +35,7 @@ The command line knows an MDM only through one contract; Fleet is the plugin bui
 
 The connector starts no process and runs no code it was given: ruff bans `subprocess`, the
 `os.system`/`popen`/`exec*`/`spawn*` family, `webbrowser`, `eval` and `exec`, and
-`tests/conftest.py` makes every way to start a process raise for the whole test run. A missing
+`conftest.py` at the root makes every way to start a process raise for the whole test run. A missing
 feature is not a reason to shell out.
 
 ## Facts measured against a live Fleet
