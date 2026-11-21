@@ -179,3 +179,11 @@ def test_the_example_is_a_template_we_accept() -> None:
     assert "defaultPermissionPolicy" not in template.policy, "nothing granted to every app"
     rules = template.policy["choosePrivateKeyRules"]
     assert [r["packageNames"] for r in rules] == [["com.android.chrome", "com.atakmap.app.civ", "im.vector.app"]]
+
+
+def test_the_shipped_subject_carries_the_device_id() -> None:
+    """A subject cannot change once a team has phones, so the id is there from the first template"""
+    template = load(EXAMPLE, domain="example.fi", key_alias="rmscep")
+
+    assert template.certificate is not None
+    assert template.certificate.subject == f"{NAMED}, OU=$FLEET_VAR_HOST_UUID"

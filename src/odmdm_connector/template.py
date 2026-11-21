@@ -18,13 +18,15 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from importlib import resources
+from importlib.resources.abc import Traversable
 from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 
-#: The template shipped with the package: what a Deploy App deployment's phones need
-EXAMPLE = Path(__file__).with_name("template.json")
+#: The template shipped with the package: what a Deploy App deployment's phones need. Read through
+#: importlib.resources, so that it is found also when the package runs from inside a zip file.
+EXAMPLE = resources.files(__package__).joinpath("template.json")
 
 
 class TemplateError(ValueError):
@@ -141,7 +143,7 @@ def _substitute(value: Any, values: dict[str, str]) -> Any:
     return value
 
 
-def load(path: Path, domain: str, key_alias: str) -> MdmTemplate:
+def load(path: Traversable, domain: str, key_alias: str) -> MdmTemplate:
     """Read the document and fill in this deployment's values
 
     Raises TemplateError rather than letting a malformed document reach the MDM, because a half
