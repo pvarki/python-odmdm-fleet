@@ -14,6 +14,17 @@ Run it from an operator's machine, never inside the deployment: it holds a Fleet
 something that can reach every device a unit owns has no business running next to an internet
 facing service.
 
+Install
+-------
+
+Install it with uv (https://docs.astral.sh/uv/getting-started/installation/); git must be
+installed too::
+
+    uv tool install git+https://github.com/pvarki/python-odmdm-fleet
+    odmdm-connector --help
+
+From a checkout, ``uv tool install .`` does the same.
+
 Enrolling phones
 ----------------
 
