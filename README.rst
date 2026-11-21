@@ -87,6 +87,8 @@ All configuration is via environment variables:
 ``ODMDM_TOKEN_FILE``
     A file holding the Fleet API token. Changing the certificate authority's challenge needs a
     global admin token, because Fleet keeps certificate authorities outside teams.
+    Keep the file outside this checkout, readable only by you: the token can change every
+    enrolled phone. The tool reads it and never prints, logs or writes it.
 
 ``ODMDM_TEAM``
     The team phones enrol into and get the certificate in. Default ``Deploy App``.

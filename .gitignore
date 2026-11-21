@@ -138,3 +138,7 @@ dmypy.json
 # Pre-commit / prettier cache
 .prettier_cache
 .ruff_cache/
+
+# MDM API tokens and local template copies: keep them outside the checkout, never commit them
+*.token
+/template*.json
