@@ -45,7 +45,10 @@ class _Fleet:
         path = request.url.path
         self.calls.append((request.method, path))
         if path.endswith("/hosts") and request.method == "GET":
-            return httpx.Response(200, json={"hosts": [{"id": h["id"]} for h in self.hosts]})
+            # Fleet answers one page at a time, the first being page 0
+            per_page = int(request.url.params.get("per_page", "100"))
+            first = int(request.url.params.get("page", "0")) * per_page
+            return httpx.Response(200, json={"hosts": [{"id": h["id"]} for h in self.hosts[first : first + per_page]]})
         if path.endswith("/device_mapping") and request.method == "PUT":
             # The name shows in the host detail as its IdP user, which is what the certificate reads
             found = next(h for h in self.hosts if h["id"] == int(path.split("/")[-2]))

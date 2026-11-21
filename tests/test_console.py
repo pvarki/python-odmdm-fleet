@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from odmdm_connector import config
+from odmdm_connector import fleet as fleet_module
 from odmdm_connector.console import cli_group
 
 from .test_fleet import _Fleet, _host, _mdm
@@ -588,3 +589,15 @@ def test_name_all_starts_from_one_or_more(fleet: _Fleet, start: str) -> None:
 
     assert result.exit_code == 2
     assert not fleet.calls
+
+
+@pytest.mark.parametrize("count", [4, 5])
+def test_phones_reads_every_page_of_hosts(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch, count: int) -> None:
+    """A team bigger than one page is listed whole, also when the last page is full"""
+    monkeypatch.setattr(fleet_module, "HOSTS_PER_PAGE", 2)
+    fleet.hosts = [_host(31 + n, "verified", f"OTTER{n + 1}") for n in range(count)]
+
+    result = CliRunner().invoke(cli_group, ["phones"])
+
+    assert result.exit_code == 0, result.output
+    assert [line.split()[0] for line in result.output.splitlines()] == [str(31 + n) for n in range(count)]

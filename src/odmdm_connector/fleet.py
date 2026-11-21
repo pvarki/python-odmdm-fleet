@@ -28,6 +28,9 @@ class FleetError(RuntimeError):
     """Fleet refused, or answered something we cannot use"""
 
 
+#: Fleet's hosts listing answers in pages; Fleet's page numbers start from 0
+HOSTS_PER_PAGE = 500
+
 #: Google refuses a managed web app title of 30 characters or more
 MAX_WEB_APP_TITLE = 29
 
@@ -471,8 +474,16 @@ class FleetMdm:
     # --- naming ---------------------------------------------------------------
 
     def _hosts(self, team: int) -> list[dict[str, Any]]:
-        """The devices in a team"""
-        return self._call("GET", f"/api/latest/fleet/hosts?team_id={team}&per_page=500").get("hosts") or []
+        """The devices in a team, every page of them"""
+        found: list[dict[str, Any]] = []
+        page = 0
+        while True:
+            query = urlencode({"team_id": team, "page": page, "per_page": HOSTS_PER_PAGE})
+            batch = self._call("GET", f"/api/latest/fleet/hosts?{query}").get("hosts") or []
+            found.extend(batch)
+            if len(batch) < HOSTS_PER_PAGE:
+                return found
+            page += 1
 
     def phones(self, team: int, certificate: str) -> list[Phone]:
         """The team's devices in enrolment order, each with its name and its certificate row
