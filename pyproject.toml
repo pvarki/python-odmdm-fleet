@@ -50,6 +50,48 @@ packages = ["src/odmdm_connector"]
 line-length = 120
 target-version = "py311"
 
+[tool.ruff.lint]
+# The connector holds a token that can reach every phone: it starts no process and runs no code
+# it was given. S102 and S307 are exec and eval.
+extend-select = ["TID251", "S102", "S307"]
+
+[tool.ruff.lint.per-file-ignores]
+# The guard that makes those raise during the tests, and its test
+"tests/conftest.py" = ["TID251"]
+"tests/test_no_processes.py" = ["TID251"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"subprocess".msg = "The connector starts no process"
+"asyncio.create_subprocess_exec".msg = "The connector starts no process"
+"asyncio.create_subprocess_shell".msg = "The connector starts no process"
+"multiprocessing".msg = "The connector starts no process"
+"pty".msg = "The connector starts no process"
+"webbrowser".msg = "Opening a browser starts a process"
+"os.system".msg = "The connector starts no process"
+"os.popen".msg = "The connector starts no process"
+"os.fork".msg = "The connector starts no process"
+"os.forkpty".msg = "The connector starts no process"
+"os.posix_spawn".msg = "The connector starts no process"
+"os.posix_spawnp".msg = "The connector starts no process"
+"os.startfile".msg = "The connector starts no process"
+"os.execl".msg = "The connector starts no process"
+"os.execle".msg = "The connector starts no process"
+"os.execlp".msg = "The connector starts no process"
+"os.execlpe".msg = "The connector starts no process"
+"os.execv".msg = "The connector starts no process"
+"os.execve".msg = "The connector starts no process"
+"os.execvp".msg = "The connector starts no process"
+"os.execvpe".msg = "The connector starts no process"
+"os.spawnl".msg = "The connector starts no process"
+"os.spawnle".msg = "The connector starts no process"
+"os.spawnlp".msg = "The connector starts no process"
+"os.spawnlpe".msg = "The connector starts no process"
+"os.spawnv".msg = "The connector starts no process"
+"os.spawnve".msg = "The connector starts no process"
+"os.spawnvp".msg = "The connector starts no process"
+"os.spawnvpe".msg = "The connector starts no process"
+"importlib.import_module".msg = "Only plugins.load imports code, and only the chosen entry point"
+
 [tool.mypy]
 strict=true
 # The demo plugin's tests import it from its source, as pytest does
