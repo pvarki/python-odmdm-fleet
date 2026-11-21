@@ -4,6 +4,7 @@ An operator runs these by hand, so a missing setting has to say what is missing 
 to say why, rather than end in a traceback.
 """
 
+import argparse
 import codecs
 import datetime
 import getpass
@@ -17,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from odmdm_connector import __version__, console, plugins
+from odmdm_connector import __version__, console, plugins, web
 from odmdm_connector import fleet as fleet_module
 from odmdm_connector.fleet_plugin import FleetPlugin
 
@@ -1066,3 +1067,46 @@ def test_a_log_level_that_is_not_a_number_is_said(run: Run, level: str) -> None:
     result = run(["mdms"], env={"ODMDM_LOG_LEVEL": level})
 
     assert (result.exit_code, result.stdout, result.stderr) == (1, "", f"{console.LOG_LEVEL}\n")
+
+
+def _pages(monkeypatch: pytest.MonkeyPatch) -> list[argparse.Namespace]:
+    """What the web command was started with, each time, in place of serving the page"""
+    started: list[argparse.Namespace] = []
+
+    def page(args: argparse.Namespace) -> int:
+        """Serve the page"""
+        started.append(args)
+        return 0
+
+    monkeypatch.setattr(console, "page", page)
+    return started
+
+
+@pytest.mark.parametrize(
+    ("arguments", "verbose"),
+    [([], 0), (["-v"], 1), (["--mdm", "fleet", "--set", "team=Deploy App"], 0)],
+)
+def test_without_a_command_the_page_starts_with_web_s_defaults(
+    arguments: list[str], verbose: int, monkeypatch: pytest.MonkeyPatch, run: Run
+) -> None:
+    """A downloaded file is started by a double-click, with no arguments"""
+    started = _pages(monkeypatch)
+
+    result = run(arguments)
+
+    assert result.exit_code == 0
+    assert [(args.port, args.browser, args.verbose) for args in started] == [(web.PORT, True, verbose)]
+
+
+@pytest.mark.parametrize("arguments", [["--help"], ["--version"], ["nope"], ["-v", "nope"]])
+def test_help_version_and_a_wrong_command_start_no_page(
+    arguments: list[str], monkeypatch: pytest.MonkeyPatch, run: Run
+) -> None:
+    started = _pages(monkeypatch)
+
+    result = run(arguments)
+
+    assert not started
+    assert result.exit_code == (2 if "nope" in arguments else 0)
+    if "nope" in arguments:
+        assert "invalid choice: 'nope'" in result.stderr

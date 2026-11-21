@@ -44,7 +44,12 @@ class _Failed(Exception):
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the command line and answer its exit code; a usage error exits 2 through argparse"""
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    given = sys.argv[1:] if argv is None else list(argv)
+    args = parser.parse_args(given)
+    if not hasattr(args, "run"):
+        # Started with no command, as a downloaded file is by a double-click: the page, with web's defaults
+        args = parser.parse_args([*given, "web"])
     try:
         level = int(os.environ.get("ODMDM_LOG_LEVEL", "20"))
     except ValueError:
@@ -446,7 +451,9 @@ def _parser() -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         help="A setting of the MDM, such as mdm_url; never a secret, which is read from the file ODMDM_<KEY>_FILE names",
     )
-    commands = parser.add_subparsers(title="commands", metavar="COMMAND", required=True)
+    commands = parser.add_subparsers(
+        title="commands", metavar="COMMAND", description="Without a command: web with its defaults"
+    )
 
     def command(called: str, run: Callable[[argparse.Namespace], int], *shared: str) -> argparse.ArgumentParser:
         doc = inspect.cleandoc(run.__doc__ or "")
