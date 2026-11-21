@@ -11,8 +11,8 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
-from odmdm_fleet import config
-from odmdm_fleet.console import cli_group
+from odmdm_connector import config
+from odmdm_connector.console import cli_group
 
 from .test_fleet import _Fleet, _host, _mdm
 
@@ -51,7 +51,7 @@ def test_a_template_and_domain_are_required(command: list[str], monkeypatch: pyt
     result = CliRunner().invoke(cli_group, command)
 
     assert result.exit_code == 1
-    assert "ODMDM_FLEET_TEMPLATE" in result.output
+    assert "ODMDM_TEMPLATE" in result.output
 
 
 def _template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,7 +115,7 @@ def test_phones_needs_somewhere_to_ask(monkeypatch: pytest.MonkeyPatch) -> None:
     result = CliRunner().invoke(cli_group, ["phones"])
 
     assert result.exit_code == 1
-    assert "ODMDM_FLEET_URL" in result.output
+    assert "ODMDM_MDM_URL" in result.output
 
 
 NO_NAME = (

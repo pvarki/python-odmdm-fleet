@@ -12,9 +12,9 @@ from typing import Any
 import httpx
 import pytest
 
-from odmdm_fleet.fleet import FleetError, FleetMdm
-from odmdm_fleet.icon import launcher_icon
-from odmdm_fleet.template import App, Certificate, LinkApp, MdmTemplate
+from odmdm_connector.fleet import FleetError, FleetMdm
+from odmdm_connector.icon import launcher_icon
+from odmdm_connector.template import App, Certificate, LinkApp, MdmTemplate
 
 TEMPLATE = MdmTemplate(
     apps=(

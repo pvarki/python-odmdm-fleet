@@ -1,6 +1,6 @@
-===========
-odmdm-fleet
-===========
+===============
+odmdm-connector
+===============
 
 Connects FleetDM to an OpenDefence deployment's device enrolment.
 
@@ -22,20 +22,20 @@ them, and each gets its certificate once it has a name.
 
 1. Once per deployment, and whenever the template changes::
 
-       odmdm-fleet apply
+       odmdm-connector apply
 
 2. Open enrolment in Deploy App (**User management → MDM**) and give Fleet the new challenge. It
    asks for it, and changes nothing else::
 
-       odmdm-fleet challenge
+       odmdm-connector challenge
 
 3. Enrol phones into the ``Deploy App`` team, as many as you like, in any order. Name them once
    every phone in the team has its apps: naming can send the policy to all of them again.
 
 4. Name them, all at once or a few at a time::
 
-       odmdm-fleet name --all OTTER           # OTTER1, OTTER2, ... in the order they enrolled
-       odmdm-fleet name 31=OTTER4 32=OTTER5   # host id = callsign, the ids being what phones prints
+       odmdm-connector name --all OTTER           # OTTER1, OTTER2, ... in the order they enrolled
+       odmdm-connector name 31=OTTER4 32=OTTER5   # host id = callsign, the ids being what phones prints
 
    Each phone gets its certificate at its next check-in, within about 15 minutes, and greets its
    callsign in Deploy App. ``phones`` shows where each one is. ``resend`` asks again for a refused
@@ -60,13 +60,13 @@ Commands
 
 .. code-block:: bash
 
-    odmdm-fleet apply                     # state what devices need; --force-policy sends the policy again
-    odmdm-fleet apply --dry-run           # validate the template without touching Fleet
-    odmdm-fleet challenge                 # give Fleet a new window's challenge, nothing else
-    odmdm-fleet phones                    # each phone's host id, callsign, model and certificate
-    odmdm-fleet name 31=OTTER4 32=OTTER5  # name these phones, and Fleet sends their certificates
-    odmdm-fleet name --all OTTER          # the same for every phone without a name, numbered
-    odmdm-fleet resend [HOST_ID ...]      # ask again; without ids, every named phone that failed
+    odmdm-connector apply                     # state what devices need; --force-policy sends the policy again
+    odmdm-connector apply --dry-run           # validate the template without touching Fleet
+    odmdm-connector challenge                 # give Fleet a new window's challenge, nothing else
+    odmdm-connector phones                    # each phone's host id, callsign, model and certificate
+    odmdm-connector name 31=OTTER4 32=OTTER5  # name these phones, and Fleet sends their certificates
+    odmdm-connector name --all OTTER          # the same for every phone without a name, numbered
+    odmdm-connector resend [HOST_ID ...]      # ask again; without ids, every named phone that failed
 
 ``name --all`` numbers in enrolment order from one above the highest ``OTTER<n>`` in the team, or
 from ``--start N``. It sees only this team's phones, and Deploy App never gives a callsign out
@@ -81,27 +81,27 @@ Configuration
 
 All configuration is via environment variables:
 
-``ODMDM_FLEET_URL``
+``ODMDM_MDM_URL``
     Base URL of Fleet's API.
 
-``ODMDM_FLEET_TOKEN_FILE``
+``ODMDM_TOKEN_FILE``
     A file holding the Fleet API token. Changing the certificate authority's challenge needs a
     global admin token, because Fleet keeps certificate authorities outside teams.
 
-``ODMDM_FLEET_TEAM``
+``ODMDM_TEAM``
     The team phones enrol into and get the certificate in. Default ``Deploy App``.
 
-``ODMDM_FLEET_TEMPLATE``
+``ODMDM_TEMPLATE``
     The document saying what to install, see below.
 
-``ODMDM_FLEET_DOMAIN``
+``ODMDM_DOMAIN``
     The deployment's DNS name.
 
-``ODMDM_FLEET_CHALLENGE``
+``ODMDM_CHALLENGE``
     The challenge on Deploy App's MDM page, for ``challenge`` and a first ``apply``. New for every
     enrolment window.
 
-``ODMDM_FLEET_KEY_ALIAS``
+``ODMDM_KEY_ALIAS``
     The certificate template's name, which becomes the Android keystore alias. Default ``rmscep``,
     what the first deployments were set up with. Never change it for a deployment: a second key
     will not install over an existing alias.
@@ -169,11 +169,11 @@ Docker
 
 The ``production`` target runs the CLI::
 
-    docker build --ssh default --target production -t odmdm-fleet:latest .
-    docker run --rm -e ODMDM_FLEET_URL -e ODMDM_FLEET_TOKEN_FILE=/run/token \
+    docker build --ssh default --target production -t odmdm-connector:latest .
+    docker run --rm -e ODMDM_MDM_URL -e ODMDM_TOKEN_FILE=/run/token \
       -v "$PWD/fleet.token:/run/token:ro" -v "$PWD/template.json:/run/template.json:ro" \
-      -e ODMDM_FLEET_TEMPLATE=/run/template.json -e ODMDM_FLEET_DOMAIN \
-      odmdm-fleet:latest odmdm-fleet apply
+      -e ODMDM_TEMPLATE=/run/template.json -e ODMDM_DOMAIN \
+      odmdm-connector:latest odmdm-connector apply
 
 For the test suite in docker use the ``tox`` target, and for a development shell ``devel_shell``.
 

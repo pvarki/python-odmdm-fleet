@@ -30,18 +30,18 @@ search = 'version = "{current_version}"'
 replace = 'version = "{new_version}"'
 
 [[tool.bumpversion.files]]
-filename = "src/odmdm_fleet/__init__.py"
+filename = "src/odmdm_connector/__init__.py"
 search = '__version__ = "{current_version}"'
 replace = '__version__ = "{new_version}"'
 
 [[tool.bumpversion.files]]
-filename = "tests/test_odmdm_fleet.py"
+filename = "tests/test_odmdm_connector.py"
 search = '__version__ == "{current_version}"'
 replace = '__version__ == "{new_version}"'
 
 [[tool.bumpversion.files]]
 filename = "uv.lock"
-search = '''name = "odmdm-fleet"
+search = '''name = "odmdm-connector"
 version = "{current_version}"'''
-replace = '''name = "odmdm-fleet"
+replace = '''name = "odmdm-connector"
 version = "{new_version}"'''

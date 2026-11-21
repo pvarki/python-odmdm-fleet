@@ -1,4 +1,4 @@
-"""CLI entrypoints for odmdm-fleet"""
+"""CLI entrypoints for odmdm-connector"""
 
 import logging
 import re
@@ -7,7 +7,7 @@ from pathlib import Path
 import click
 from libadvian.logging import init_logging
 
-from odmdm_fleet import __version__
+from odmdm_connector import __version__
 
 from . import config, template
 from .fleet import FleetError, FleetMdm, Phone
@@ -37,7 +37,7 @@ def cli_group(ctx: click.Context, verbose: int) -> None:
     logging.getLogger("httpx").setLevel(max(loglevel, logging.WARNING) if verbose < 2 else loglevel)
 
 
-def odmdm_fleet_cli() -> None:
+def odmdm_connector_cli() -> None:
     """CLI entrypoint"""
     cli_group()  # pylint: disable=no-value-for-parameter
 
@@ -46,11 +46,11 @@ def _fleet(ctx: click.Context, url: str | None) -> FleetMdm | None:
     """Fleet's API, or None after saying what is missing"""
     the_url = url or config.URL
     if not the_url:
-        click.echo("Give --fleet-url or set ODMDM_FLEET_URL", err=True)
+        click.echo("Give --mdm-url or set ODMDM_MDM_URL", err=True)
         ctx.exit(1)
         return None
     if not config.TOKEN_FILE or not config.TOKEN_FILE.is_file():
-        click.echo("Set ODMDM_FLEET_TOKEN_FILE to a file holding the Fleet API token", err=True)
+        click.echo("Set ODMDM_TOKEN_FILE to a file holding the Fleet API token", err=True)
         ctx.exit(1)
         return None
     return FleetMdm(the_url, config.TOKEN_FILE.read_text(encoding="utf-8").strip())
@@ -61,7 +61,7 @@ def _template(ctx: click.Context, path: str | None, domain: str | None) -> templ
     the_path = Path(path) if path else config.TEMPLATE
     the_domain = domain or config.DOMAIN
     if not the_path or not the_domain:
-        click.echo("Give --template and --domain or set ODMDM_FLEET_TEMPLATE and ODMDM_FLEET_DOMAIN", err=True)
+        click.echo("Give --template and --domain or set ODMDM_TEMPLATE and ODMDM_DOMAIN", err=True)
         ctx.exit(1)
         return None
     try:
@@ -74,10 +74,10 @@ def _template(ctx: click.Context, path: str | None, domain: str | None) -> templ
 
 @cli_group.command(name="apply")
 @click.pass_context
-@click.option("--template", "path", default=None, help="What to install (default: ODMDM_FLEET_TEMPLATE)")
-@click.option("--fleet-url", default=None, help="Base URL of Fleet's API (default: ODMDM_FLEET_URL)")
-@click.option("--team", default=None, help="The team devices get the certificate in (default: ODMDM_FLEET_TEAM)")
-@click.option("--domain", default=None, help="The deployment's DNS name (default: ODMDM_FLEET_DOMAIN)")
+@click.option("--template", "path", default=None, help="What to install (default: ODMDM_TEMPLATE)")
+@click.option("--mdm-url", default=None, help="Base URL of Fleet's API (default: ODMDM_MDM_URL)")
+@click.option("--team", default=None, help="The team devices get the certificate in (default: ODMDM_TEAM)")
+@click.option("--domain", default=None, help="The deployment's DNS name (default: ODMDM_DOMAIN)")
 @click.option(
     "--force-policy", is_flag=True, help="Re-upload the policy even if unchanged, to reach a host that just joined"
 )
@@ -85,7 +85,7 @@ def _template(ctx: click.Context, path: str | None, domain: str | None) -> templ
 def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     ctx: click.Context,
     path: str | None,
-    fleet_url: str | None,
+    mdm_url: str | None,
     team: str | None,
     domain: str | None,
     force_policy: bool,
@@ -113,7 +113,7 @@ def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         ctx.exit(0)
         return
 
-    fleet = _fleet(ctx, fleet_url)
+    fleet = _fleet(ctx, mdm_url)
     if not fleet:
         return
     try:
@@ -137,16 +137,16 @@ def apply(  # pylint: disable=too-many-arguments,too-many-positional-arguments
 @click.option(
     "--challenge",
     "value",
-    envvar="ODMDM_FLEET_CHALLENGE",
+    envvar="ODMDM_CHALLENGE",
     prompt="Challenge from Deploy App's MDM page",
     hide_input=True,
-    help="The new window's challenge (default: ODMDM_FLEET_CHALLENGE, else asked for)",
+    help="The new window's challenge (default: ODMDM_CHALLENGE, else asked for)",
 )
-@click.option("--template", "path", default=None, help="What to install (default: ODMDM_FLEET_TEMPLATE)")
-@click.option("--fleet-url", default=None, help="Base URL of Fleet's API (default: ODMDM_FLEET_URL)")
-@click.option("--domain", default=None, help="The deployment's DNS name (default: ODMDM_FLEET_DOMAIN)")
+@click.option("--template", "path", default=None, help="What to install (default: ODMDM_TEMPLATE)")
+@click.option("--mdm-url", default=None, help="Base URL of Fleet's API (default: ODMDM_MDM_URL)")
+@click.option("--domain", default=None, help="The deployment's DNS name (default: ODMDM_DOMAIN)")
 def challenge(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    ctx: click.Context, value: str, path: str | None, fleet_url: str | None, domain: str | None
+    ctx: click.Context, value: str, path: str | None, mdm_url: str | None, domain: str | None
 ) -> None:
     """Give Fleet the challenge of the enrolment window just opened
 
@@ -161,7 +161,7 @@ def challenge(  # pylint: disable=too-many-arguments,too-many-positional-argumen
         click.echo("The template states no certificate, so there is no authority to give it to", err=True)
         ctx.exit(1)
         return
-    fleet = _fleet(ctx, fleet_url)
+    fleet = _fleet(ctx, mdm_url)
     if not fleet:
         return
     try:
@@ -176,15 +176,15 @@ def challenge(  # pylint: disable=too-many-arguments,too-many-positional-argumen
 
 @cli_group.command(name="phones")
 @click.pass_context
-@click.option("--fleet-url", default=None, help="Base URL of Fleet's API (default: ODMDM_FLEET_URL)")
-@click.option("--team", default=None, help="The team the phones are in (default: ODMDM_FLEET_TEAM)")
-def phones(ctx: click.Context, fleet_url: str | None, team: str | None) -> None:
+@click.option("--mdm-url", default=None, help="Base URL of Fleet's API (default: ODMDM_MDM_URL)")
+@click.option("--team", default=None, help="The team the phones are in (default: ODMDM_TEAM)")
+def phones(ctx: click.Context, mdm_url: str | None, team: str | None) -> None:
     """List the team's phones and where each one's certificate is
 
     One line each: the host id that name and resend take, the callsign, the model, the day it
     enrolled, and the certificate in plain words.
     """
-    fleet = _fleet(ctx, fleet_url)
+    fleet = _fleet(ctx, mdm_url)
     if not fleet:
         return
     try:
@@ -267,14 +267,14 @@ def _policy_again(fleet: FleetMdm, team_id: int, found: dict[int, Phone]) -> Non
 @click.option(
     "--start", type=int, metavar="N", default=None, help="The first n for --all (default: one above the highest in use)"
 )
-@click.option("--fleet-url", default=None, help="Base URL of Fleet's API (default: ODMDM_FLEET_URL)")
-@click.option("--team", default=None, help="The team the phones are in (default: ODMDM_FLEET_TEAM)")
+@click.option("--mdm-url", default=None, help="Base URL of Fleet's API (default: ODMDM_MDM_URL)")
+@click.option("--team", default=None, help="The team the phones are in (default: ODMDM_TEAM)")
 def name(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     ctx: click.Context,
     pairs: tuple[str, ...],
     prefix: str | None,
     start: int | None,
-    fleet_url: str | None,
+    mdm_url: str | None,
     team: str | None,
 ) -> None:
     """Name phones, and have Fleet send them certificates
@@ -294,7 +294,7 @@ def name(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     if bool(pairs) == bool(prefix) or (start is not None and not prefix):
         raise click.UsageError("Give HOST=CALLSIGN for each phone, or --all PREFIX")
     wanted = _pairs(pairs)
-    fleet = _fleet(ctx, fleet_url)
+    fleet = _fleet(ctx, mdm_url)
     if not fleet:
         return
     try:
@@ -339,9 +339,9 @@ def name(  # pylint: disable=too-many-arguments,too-many-positional-arguments
 @cli_group.command(name="resend")
 @click.pass_context
 @click.argument("hosts", nargs=-1, type=int)
-@click.option("--fleet-url", default=None, help="Base URL of Fleet's API (default: ODMDM_FLEET_URL)")
-@click.option("--team", default=None, help="The team the phones are in (default: ODMDM_FLEET_TEAM)")
-def resend(ctx: click.Context, hosts: tuple[int, ...], fleet_url: str | None, team: str | None) -> None:
+@click.option("--mdm-url", default=None, help="Base URL of Fleet's API (default: ODMDM_MDM_URL)")
+@click.option("--team", default=None, help="The team the phones are in (default: ODMDM_TEAM)")
+def resend(ctx: click.Context, hosts: tuple[int, ...], mdm_url: str | None, team: str | None) -> None:
     """Have Fleet send phones their certificate requests again
 
     For a refused phone once the cause is fixed, such as enrolment opened again and its new
@@ -354,7 +354,7 @@ def resend(ctx: click.Context, hosts: tuple[int, ...], fleet_url: str | None, te
     name it holds and is refused, and reads as refused from then on though that certificate still
     works. As with name, the team's policy is sent again if a phone enrolled after it was last sent.
     """
-    fleet = _fleet(ctx, fleet_url)
+    fleet = _fleet(ctx, mdm_url)
     if not fleet:
         return
     try:

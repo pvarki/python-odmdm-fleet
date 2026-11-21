@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from odmdm_fleet.template import TemplateError, load
+from odmdm_connector.template import TemplateError, load
 
 GOOD = {
     "apps": [

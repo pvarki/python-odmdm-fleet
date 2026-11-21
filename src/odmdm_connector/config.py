@@ -1,6 +1,6 @@
 """Configuration, from the environment
 
-Every setting is prefixed ODMDM_FLEET_.
+Every setting is prefixed ODMDM_.
 """
 
 import os
@@ -8,13 +8,13 @@ from pathlib import Path
 
 
 def _env(name: str, default: str = "") -> str:
-    return os.environ.get(f"ODMDM_FLEET_{name}", default)
+    return os.environ.get(f"ODMDM_{name}", default)
 
 
 LOG_LEVEL: int = int(_env("LOG_LEVEL", "20"))
 
 #: Where Fleet's API answers
-URL: str = _env("URL")
+URL: str = _env("MDM_URL")
 
 #: A file holding the Fleet API token. A path rather than the value, so it can be a mounted secret
 #: and never appears in a process environment.
@@ -23,7 +23,7 @@ TOKEN_FILE: Path | None = Path(_env("TOKEN_FILE")) if _env("TOKEN_FILE") else No
 #: The team whose devices get the deployment's certificate
 TEAM: str = _env("TEAM", "Deploy App")
 
-#: What this deployment wants installed, as a document. See odmdm_fleet.template.
+#: What this deployment wants installed, as a document. See odmdm_connector.template.
 TEMPLATE: Path | None = Path(_env("TEMPLATE")) if _env("TEMPLATE") else None
 
 #: The deployment's DNS name, which the template substitutes into URLs

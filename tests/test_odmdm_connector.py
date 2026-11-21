@@ -1,6 +1,6 @@
 """Package level tests"""
 
-from odmdm_fleet import __version__
+from odmdm_connector import __version__
 
 
 def test_version() -> None:

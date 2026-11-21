@@ -162,7 +162,7 @@ class FleetMdm:
             if team.get("name") == name:
                 return int(team["id"])
         if not create:
-            raise FleetError(f"no team named {name}: check --team or ODMDM_FLEET_TEAM")
+            raise FleetError(f"no team named {name}: check --team or ODMDM_TEAM")
         created = self._call("POST", "/api/latest/fleet/teams", {"name": name})
         team = created.get("team", created)
         LOGGER.info("Created team %s", name)

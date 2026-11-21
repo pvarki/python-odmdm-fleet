@@ -713,7 +713,7 @@ wheels = [
 ]
 
 [[package]]
-name = "odmdm-fleet"
+name = "odmdm-connector"
 version = "0.1.0+261031"
 source = { editable = "." }
 dependencies = [
