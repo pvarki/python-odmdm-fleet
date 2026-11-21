@@ -16,6 +16,7 @@ The placeholders are the only vocabulary shared with the document:
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,38 @@ LOGGER = logging.getLogger(__name__)
 
 class TemplateError(ValueError):
     """The document is not something we can act on"""
+
+
+#: The callsign as the common name, from the name the operator gives the phone, and optionally the
+#: MDM's own device id beside it. Anything the phone or the enrolment link supplies, a serial
+#: number for one, would let whoever holds a leaked enrolment link pick an identity.
+SUBJECT = re.compile(r"CN=\$FLEET_VAR_HOST_END_USER_IDP_USERNAME(_LOCAL_PART)?(\s*,\s*OU=\$FLEET_VAR_HOST_UUID)?")
+
+
+def _unsafe(policy: dict[str, Any], certificate: dict[str, Any] | None) -> str:
+    """Why this policy and certificate would hand out more than the deployment means to, or empty
+
+    Shapes and a few safety rules only. Which apps are named is the template's business.
+    """
+    if certificate is not None and not SUBJECT.fullmatch(str(certificate.get("subject", ""))):
+        return (
+            "the certificate subject must be CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART, optionally "
+            "followed by OU=$FLEET_VAR_HOST_UUID, so the callsign is the name the operator gave the phone"
+        )
+    rules = policy.get("choosePrivateKeyRules", [])
+    if not isinstance(rules, list):
+        return "choosePrivateKeyRules must be a list"
+    for rule in rules:
+        names = rule.get("packageNames") if isinstance(rule, dict) else None
+        if not isinstance(names, list) or not names or not all(isinstance(n, str) and n for n in names):
+            return "every choosePrivateKeyRules entry must name its apps in packageNames, or any app may use the key"
+    if policy.get("privateKeySelectionEnabled") is True:
+        return "privateKeySelectionEnabled must not be true, or the user can hand the key to any app"
+    overrides = policy.get("advancedSecurityOverrides") or {}
+    untrusted = str(overrides.get("untrustedAppsPolicy", "")) if isinstance(overrides, dict) else ""
+    if untrusted.startswith("ALLOW_") or policy.get("installUnknownSourcesAllowed") is True:
+        return "the policy must not allow installs from unknown sources (untrustedAppsPolicy DISALLOW_INSTALL)"
+    return ""
 
 
 @dataclass(frozen=True)
@@ -158,5 +191,9 @@ def load(path: Path, domain: str, key_alias: str) -> MdmTemplate:
         certificate = Certificate(
             name=str(entry["name"]), subject=str(entry["subject"]), authority=str(entry["authority"])
         )
+
+    unsafe = _unsafe(policy, raw.get("certificate") or None)
+    if unsafe:
+        raise TemplateError(unsafe)
 
     return MdmTemplate(apps=tuple(apps), policy=policy, link_app=link, certificate=certificate)

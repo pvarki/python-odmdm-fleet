@@ -22,7 +22,9 @@ GOOD = {
     ],
     "link_app": {"title": "Deploy App", "url": "{mtls_url}/"},
     "policy": {
-        "choosePrivateKeyRules": [{"urlPattern": "{mtls_url}", "privateKeyAlias": "{key_alias}"}],
+        "choosePrivateKeyRules": [
+            {"urlPattern": "{mtls_url}", "privateKeyAlias": "{key_alias}", "packageNames": ["com.example.two"]}
+        ],
         "defaultPermissionPolicy": "GRANT",
     },
 }
@@ -63,6 +65,70 @@ def test_a_malformed_document_is_refused(tmp_path: Path, body: object, because: 
     that joined against a broken one has to be enrolled again, and its callsign is spent."""
     with pytest.raises(TemplateError):
         load(_write(tmp_path, body), domain="example.fi", key_alias="rmscep")
+
+
+NAMED = "CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART"
+
+
+def _with(policy: dict[str, object] | None = None, subject: str = NAMED) -> dict[str, object]:
+    """GOOD with a certificate, and with these policy keys changed"""
+    certificate = {"name": "{key_alias}", "subject": subject, "authority": "RMSCEP"}
+    return {**GOOD, "certificate": certificate, "policy": {**GOOD["policy"], **(policy or {})}}  # type: ignore[dict-item]
+
+
+@pytest.mark.parametrize(
+    "subject",
+    [
+        NAMED,
+        "CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME",
+        "CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART, OU=$FLEET_VAR_HOST_UUID",
+        "CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME,OU=$FLEET_VAR_HOST_UUID",
+    ],
+)
+def test_the_callsign_is_the_name_the_operator_gave(tmp_path: Path, subject: str) -> None:
+    template = load(_write(tmp_path, _with(subject=subject)), domain="example.fi", key_alias="rmscep")
+    assert template.certificate is not None and template.certificate.subject == subject
+
+
+@pytest.mark.parametrize(
+    ("body", "says"),
+    [
+        (_with(subject="CN=$FLEET_VAR_HOST_HARDWARE_SERIAL"), "certificate subject must be CN="),
+        (_with(subject="CN=OTTER1"), "certificate subject must be CN="),
+        (_with(subject=NAMED + ", OU=$FLEET_VAR_HOST_HARDWARE_SERIAL"), "certificate subject must be CN="),
+        (_with(subject="OU=$FLEET_VAR_HOST_UUID, " + NAMED), "certificate subject must be CN="),
+        (
+            _with({"choosePrivateKeyRules": [{"urlPattern": "x", "privateKeyAlias": "rmscep"}]}),
+            "must name its apps in packageNames",
+        ),
+        (
+            _with({"choosePrivateKeyRules": [{"urlPattern": "x", "packageNames": []}]}),
+            "must name its apps in packageNames",
+        ),
+        (_with({"choosePrivateKeyRules": {"packageNames": ["a"]}}), "choosePrivateKeyRules must be a list"),
+        (_with({"privateKeySelectionEnabled": True}), "privateKeySelectionEnabled must not be true"),
+        (
+            _with({"advancedSecurityOverrides": {"untrustedAppsPolicy": "ALLOW_INSTALL_DEVICE_WIDE"}}),
+            "must not allow installs from unknown sources",
+        ),
+        (
+            _with({"advancedSecurityOverrides": {"untrustedAppsPolicy": "ALLOW_INSTALL_IN_PERSONAL_PROFILE_ONLY"}}),
+            "must not allow installs from unknown sources",
+        ),
+        (_with({"installUnknownSourcesAllowed": True}), "must not allow installs from unknown sources"),
+    ],
+)
+def test_a_template_that_hands_out_too_much_is_refused(tmp_path: Path, body: object, says: str) -> None:
+    """A named phone's key for named apps only, and no side door onto the phone"""
+    with pytest.raises(TemplateError, match=says):
+        load(_write(tmp_path, body), domain="example.fi", key_alias="rmscep")
+
+
+def test_safe_settings_are_accepted(tmp_path: Path) -> None:
+    body = _with(
+        {"privateKeySelectionEnabled": False, "advancedSecurityOverrides": {"untrustedAppsPolicy": "DISALLOW_INSTALL"}}
+    )
+    assert load(_write(tmp_path, body), domain="example.fi", key_alias="rmscep").certificate is not None
 
 
 def test_a_missing_file_is_refused(tmp_path: Path) -> None:
@@ -110,3 +176,8 @@ def test_the_example_is_a_template_we_accept() -> None:
     assert template.certificate is not None
     assert template.certificate.name == "rmscep", "the keystore alias comes from the setting"
     assert not [p for p in ("{domain}", "{mtls_url}", "{key_alias}") if p in json.dumps(template.policy)]
+    assert template.policy["advancedSecurityOverrides"]["untrustedAppsPolicy"] == "DISALLOW_INSTALL"
+    assert template.policy["privateKeySelectionEnabled"] is False
+    assert "defaultPermissionPolicy" not in template.policy, "nothing granted to every app"
+    rules = template.policy["choosePrivateKeyRules"]
+    assert [r["packageNames"] for r in rules] == [["com.android.chrome", "com.atakmap.app.civ", "im.vector.app"]]

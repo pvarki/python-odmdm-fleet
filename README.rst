@@ -118,9 +118,18 @@ beginning with ``_`` are comments and never reach Fleet. ``examples/template.jso
 for Deploy App, with its reasoning in the comments.
 
 The certificate subject is the contract with the deployment. Its common name becomes the callsign:
-3 to 32 letters, digits or hyphens, no hyphen at either end. For named phones::
+3 to 32 letters, digits or hyphens, no hyphen at either end. It is the name ``name`` gives the
+phone, optionally followed by Fleet's id for the host, and the tool refuses any other::
 
     CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART
+    CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART, OU=$FLEET_VAR_HOST_UUID
+
+A name the phone supplies, such as its serial number, would make a leaked enrolment link enough
+for an identity.
+
+The tool also refuses a policy that lets an app use the key without being named in
+``packageNames``, lets the user pick a key for any app (``privateKeySelectionEnabled``), or
+allows installs from unknown sources (``untrustedAppsPolicy`` other than ``DISALLOW_INSTALL``).
 
 The order that works
 --------------------

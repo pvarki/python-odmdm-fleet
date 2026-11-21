@@ -38,9 +38,10 @@
   "certificate": {
     "_comment": [
       "The template Fleet fills in per phone. Its common name becomes the phone's callsign: 3-32",
-      "letters, digits or inner hyphens. This is the name `odmdm-connector name` gives a phone. To skip",
-      "naming, CN=$FLEET_VAR_HOST_HARDWARE_SERIAL works for company-owned phones only.",
-      "The name becomes the Android keystore alias, so it is per deployment, not per phone."
+      "letters, digits or inner hyphens. This is the name `odmdm-connector name` gives a phone, and",
+      "the connector refuses any other common name: one the phone supplies, such as its serial",
+      "number, would make a leaked enrolment link enough for an identity. OU=$FLEET_VAR_HOST_UUID",
+      "may follow it. The name becomes the Android keystore alias, so it is per deployment."
     ],
     "authority": "RMSCEP",
     "name": "{key_alias}",
@@ -53,14 +54,11 @@
   },
   "policy": {
     "_comment_key": "urlPattern is a java.util.regex pattern matched against the WHOLE string the app passes. Chrome passes host:port with no scheme (mtls.example.fi:443), so a pattern starting https:// matches nothing, the device offers no key, and the server answers mtls_fail exactly as if no certificate existed. This one takes both forms and still only the mTLS host.",
+    "_comment_safety": "Only the named apps may use the key, the user cannot hand it to another app, nothing installs from unknown sources, and apps ask for their permissions as usual. The connector refuses a template that loosens the first three.",
     "advancedSecurityOverrides": {
-      "untrustedAppsPolicy": "ALLOW_INSTALL_DEVICE_WIDE"
+      "untrustedAppsPolicy": "DISALLOW_INSTALL"
     },
     "choosePrivateKeyRules": [
-      {
-        "privateKeyAlias": "{key_alias}",
-        "urlPattern": "(https://)?mtls\\.{domain}(:443)?(/.*)?"
-      },
       {
         "packageNames": [
           "com.android.chrome",
@@ -71,7 +69,6 @@
         "urlPattern": "(https://)?mtls\\.{domain}(:443)?(/.*)?"
       }
     ],
-    "defaultPermissionPolicy": "GRANT",
-    "privateKeySelectionEnabled": true
+    "privateKeySelectionEnabled": false
   }
 }

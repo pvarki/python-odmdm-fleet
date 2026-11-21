@@ -16,6 +16,9 @@ from odmdm_connector.console import cli_group
 
 from .test_fleet import _Fleet, _host, _mdm
 
+#: The certificate subject the template loader accepts: the callsign the operator gave the phone
+NAMED = "CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART"
+
 
 @pytest.fixture
 def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Fleet:
@@ -29,7 +32,7 @@ def fleet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Fleet:
     monkeypatch.setattr(config, "TOKEN_FILE", token)
     monkeypatch.setattr(config, "TEAM", "rmscep")
     stub = _Fleet()
-    stub.certificates = [{"id": 81, "name": "rmscep", "subject_name": "CN=$VAR", "certificate_authority_id": 3}]
+    stub.certificates = [{"id": 81, "name": "rmscep", "subject_name": NAMED, "certificate_authority_id": 3}]
     stub.profiles = [
         {
             "name": "rmscep-policy",
@@ -61,7 +64,7 @@ def _template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
             {
                 "apps": [{"package": "com.example.one"}],
                 "policy": {"defaultPermissionPolicy": "GRANT"},
-                "certificate": {"name": "{key_alias}", "subject": "CN=$VAR", "authority": "RMSCEP"},
+                "certificate": {"name": "{key_alias}", "subject": NAMED, "authority": "RMSCEP"},
             }
         ),
         encoding="utf-8",
