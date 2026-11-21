@@ -1,5 +1,7 @@
 """The naming rules, without an MDM"""
 
+from dataclasses import replace
+
 import pytest
 
 from odmdm_connector import core
@@ -27,6 +29,7 @@ def test_numbering_goes_on_from_the_highest_in_use() -> None:
 
     assert core.numbered(phones, "OTTER", None) == [("b", "OTTER8"), ("d", "OTTER9")]
     assert core.numbered(phones, "OTTER", 20) == [("b", "OTTER20"), ("d", "OTTER21")]
+    assert (core.next_number(phones, "otter"), core.next_number(phones, "BEAR")) == (8, 1)
 
 
 @pytest.mark.parametrize(
@@ -48,3 +51,24 @@ def test_a_batch_is_refused_whole(wanted: list[tuple[str, str]], says: str) -> N
     refused = core.refusal(phones, wanted)
 
     assert refused.startswith(says) if says else not refused
+
+
+@pytest.mark.parametrize(
+    ("state", "says"),
+    [
+        (State.NO_REQUEST, "no certificate requested: the words"),
+        (State.NEEDS_NAME, "waiting for a name"),
+        (State.NOT_ASKED, "named, but its certificate was not asked for again: the words"),
+        (State.WAITING, "requested, waiting for the phone"),
+        (State.READY, "has its certificate"),
+        (State.REFUSED, "refused by Deploy App: the words"),
+        (State.UNREACHABLE, "could not reach Deploy App: the words"),
+        (State.FAILED, "failed: the words"),
+    ],
+)
+def test_the_plugins_words_explain_only_a_certificate_not_under_way(state: State, says: str) -> None:
+    """After asking again, an old refusal does not sit beside a request that is waiting"""
+    phone = Phone("a1", "OTTER1", "a phone", "2026-11-01T08:00:00Z", state, "the words")
+
+    assert core.said(phone) == says
+    assert core.said(replace(phone, detail="")) == state.value
