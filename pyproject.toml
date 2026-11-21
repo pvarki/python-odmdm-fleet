@@ -1,19 +1,14 @@
 [project]
 name = "odmdm-connector"
 version = "1.1.0+261121"
-description = "Connects FleetDM to an OpenDefence deployment's SCEP device enrolment"
+description = "Connects an MDM, FleetDM built in, to an OpenDefence deployment's SCEP device enrolment"
 authors = [
     { name = "Benjam", email = "benjam@opendefence.fi" },
 ]
 license = "MIT"
 readme = "README.rst"
 requires-python = ">=3.11,<4.0"
-dependencies = [
-    "libadvian>=1.4,<2.0",
-    "click>=8.1,<9.0",
-    "httpx>=0.28,<1.0",
-    "keyring>=25.6,<26.0",
-]
+dependencies = ["keyring>=25.6,<26.0"]
 
 [project.urls]
 homepage = "https://github.com/pvarki/python-odmdm-fleet"
@@ -106,7 +101,7 @@ disallow_untyped_decorators=false
 junit_family="xunit2"
 # The demo plugin, a package of its own, runs its contract tests here from its source
 pythonpath=["examples/odmdm-connector-demo/src"]
-addopts="--cov=odmdm_connector --cov-fail-under=65 --cov-branch"
+addopts="--cov=odmdm_connector --cov-fail-under=88 --cov-branch"
 
 [tool.coverage.run]
 omit = ["tests/*"]
