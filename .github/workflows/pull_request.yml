@@ -2,63 +2,59 @@ on:
   pull_request:
   workflow_dispatch: # Allow manual triggering
 
+permissions:
+  contents: read
+
 jobs:
-  # Only the bumpversion half. The library's prek job is checkout + prek-action with no venv, and
-  # the generated python config ends in a local mypy hook that resolves from PATH, so it cannot
-  # run there. Every sibling runs prek itself, after setup-python.
-  general-checks:
-    name: General checks
-    uses: pvarki/config-ci-library/.github/workflows/general-check.yml@main
-    with:
-      run-prek: false
+  # The library's general-check runs prek without a venv, and the generated python config ends in a
+  # local mypy hook that resolves from PATH, so prek runs here after setup-python instead.
+  bumpversion-check:
+    name: Validate .bumpversion.toml
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pvarki/config-ci-library/.github/actions/validate-bumpversion@fffb737257f6a08b0bbd03aa8f9e090cc610e7b6 # v0.15.0+261104
 
   pre-commit:
     name: Run pre-commit checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: pvarki/config-ci-library/.github/actions/setup-python@main
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pvarki/config-ci-library/.github/actions/setup-python@fffb737257f6a08b0bbd03aa8f9e090cc610e7b6 # v0.15.0+261104
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - name: Do pre-commit checks
-        run: |
-          uv run prek run --all-files
+        run: uv run prek run --all-files
 
   test:
-    name: Run tests
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      checks: write
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11"]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.12"]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
     steps:
-      - uses: actions/checkout@v6
-      - uses: pvarki/config-ci-library/.github/actions/setup-python@main
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pvarki/config-ci-library/.github/actions/setup-python@fffb737257f6a08b0bbd03aa8f9e090cc610e7b6 # v0.15.0+261104
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Test with pytest
-        run: |
-          uv run py.test -v --junitxml=pytest.xml
-      - name: Publish Test Report
-        uses: mikepenz/action-junit-report@v4
-        if: success() || failure() # always run even if the previous step fails
-        with:
-          report_paths: "**/pytest*.xml"
-          detailed_summary: true
-          check_name: "JUnit report (local)"
+      - name: Test with pytest, coverage floor in pyproject.toml
+        run: uv run pytest -v
 
   snyk-test:
     name: Run Snyk test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: pvarki/config-ci-library/.github/actions/setup-python@main
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pvarki/config-ci-library/.github/actions/setup-python@fffb737257f6a08b0bbd03aa8f9e090cc610e7b6 # v0.15.0+261104
         with:
           python-version: "3.11"
-      - uses: pvarki/config-ci-library/.github/actions/snyk-test@main
+      - uses: pvarki/config-ci-library/.github/actions/snyk-test@fffb737257f6a08b0bbd03aa8f9e090cc610e7b6 # v0.15.0+261104
         with:
           snyk-org: deployapp-core-services
           snyk-token: ${{ secrets.SNYK_TOKEN }}

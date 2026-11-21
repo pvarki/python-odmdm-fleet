@@ -4,16 +4,40 @@ on:
       - main
   workflow_dispatch: # Allow manual triggering
 
+permissions:
+  contents: read
+
 jobs:
   snyk-monitor:
     name: Run Snyk monitor
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: pvarki/config-ci-library/.github/actions/setup-python@main
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pvarki/config-ci-library/.github/actions/setup-python@fffb737257f6a08b0bbd03aa8f9e090cc610e7b6 # v0.15.0+261104
         with:
           python-version: "3.11"
-      - uses: pvarki/config-ci-library/.github/actions/snyk-monitor@main
+      - uses: pvarki/config-ci-library/.github/actions/snyk-monitor@fffb737257f6a08b0bbd03aa8f9e090cc610e7b6 # v0.15.0+261104
         with:
           snyk-org: deployapp-core-services
           snyk-token: ${{ secrets.SNYK_TOKEN }}
+
+  release:
+    name: Tag the current version and release it
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: pvarki/config-ci-library/.github/actions/tag-release@fffb737257f6a08b0bbd03aa8f9e090cc610e7b6 # v0.15.0+261104
+        id: tag
+      - uses: pvarki/config-ci-library/.github/actions/release-notes@fffb737257f6a08b0bbd03aa8f9e090cc610e7b6 # v0.15.0+261104
+        if: steps.tag.outputs.tag != ''
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          release: ${{ steps.tag.outputs.version }}
+          product: odmdm-connector
+          attach-to-release: "true"
