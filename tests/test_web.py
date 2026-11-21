@@ -723,12 +723,25 @@ def test_without_a_desktop_the_address_is_printed_to_open(
     ]
 
 
+#: What a connector still running wrote into the file
+RUNNING = "written by a connector still running"
+
+
+def _running_connectors_file(rig: WebRig) -> Path:
+    """The file, as another connector on this computer wrote it and still needs it"""
+    rig.directory.mkdir(parents=True, exist_ok=True)
+    path = rig.directory / browser.NAME
+    path.write_text(RUNNING, encoding="utf-8")
+    return path
+
+
 def test_with_no_browser_the_address_is_printed_to_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     rig = WebRig(tmp_path / "config")
     started = _web(rig, monkeypatch)
     opener = Opener(rig, monkeypatch)
+    running = _running_connectors_file(rig)
     port = _free_port()
 
     assert console.main(["web", "--no-browser", "--port", str(port)]) == 0
@@ -738,7 +751,7 @@ def test_with_no_browser_the_address_is_printed_to_open(
         f"{console.OPEN} http://127.0.0.1:{port}/#key={started[0].key}",
         "Press Ctrl+C to stop it.",
     ]
-    assert not (rig.directory / browser.NAME).exists()
+    assert running.read_text(encoding="utf-8") == RUNNING, "another connector's, left alone"
 
 
 def test_when_the_browser_says_no_the_file_is_gone(
@@ -770,10 +783,11 @@ def test_ctrl_c_during_a_job_says_what_to_do_next(
 def test_the_web_command_says_when_the_port_is_taken(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """On a desktop: a connector may be running on that port, and its file is left alone"""
     rig = WebRig(tmp_path / "config")
-    _web(rig, monkeypatch)
-    rig.directory.mkdir(parents=True, exist_ok=True)
-    (rig.directory / browser.NAME).write_text("left from an earlier start", encoding="utf-8")
+    opener = Opener(rig, monkeypatch)
+    _web(rig, monkeypatch, asked=opener.asked)
+    running = _running_connectors_file(rig)
     with socket.socket() as taken:
         taken.bind(("127.0.0.1", 0))
         taken.listen()
@@ -785,7 +799,8 @@ def test_the_web_command_says_when_the_port_is_taken(
     assert code == 1
     assert said.startswith(f"The page cannot listen on port {port} of this computer: ")
     assert said.endswith(". Give another with --port.\n")
-    assert not (rig.directory / browser.NAME).exists(), "removed when the server could not start too"
+    assert opener.handed == []
+    assert running.read_text(encoding="utf-8") == RUNNING, "another connector's, left alone"
 
 
 def test_the_web_command_says_the_connector_may_be_running_when_its_own_port_is_taken(

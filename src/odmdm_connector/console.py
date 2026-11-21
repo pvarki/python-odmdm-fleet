@@ -389,8 +389,11 @@ def page(args: argparse.Namespace) -> int:
             except KeyboardInterrupt:
                 if started.busy():
                     print(STOPPED_BUSY, file=sys.stderr)
+            finally:
+                # Only this run's file: without it, the file may be a connector's that is still running
+                if asked:
+                    browser.remove(directory)
     finally:
-        browser.remove(directory)
         started.close()
     return 0
 

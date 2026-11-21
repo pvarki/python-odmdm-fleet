@@ -184,4 +184,6 @@ strands every enrolled phone's key.
   sends it only as the `X-ODMDM-Key` header to the page's own `/api/`. Never log it, never put it in
   an answer, never in a cookie, a query or another program's arguments.
 - **`open-page.html`** in `store.directory()`: it holds the address, key and all, while the
-  connector runs, so it is written mode 0600 and removed in the `web` command's `finally`.
+  connector runs, so it is written mode 0600 and removed in the `web` command's `finally`, only by
+  a run that asked the browser: with `--no-browser`, without a desktop or on a taken port it may be
+  a running connector's.
