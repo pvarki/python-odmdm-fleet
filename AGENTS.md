@@ -131,7 +131,8 @@ giving callsigns, one phone, the settings and removing a Deploy App. Keep these 
   so on a computer shared with other users the settings line is copied by hand instead. Another
   program on this computer can slow the page down, but cannot read or drive it without the key.
 - `web` opens the page in the default browser through `browser.py` only, and prints the address;
-  `--no-browser` only prints it. Deploy App's button finds the page only in the browser where the
+  `--no-browser` only prints it. The address is printed first and the browser asked from a daemon
+  thread as the page starts to serve, since some openers wait for the browser or never return. Deploy App's button finds the page only in the browser where the
   address was opened.
 
 ## Facts measured against a live Fleet

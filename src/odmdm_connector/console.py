@@ -13,6 +13,7 @@ import inspect
 import logging
 import os
 import sys
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from urllib.parse import urlparse
@@ -26,7 +27,7 @@ from .settings import Settings
 
 #: Said when ODMDM_LOG_LEVEL is not a number
 LOG_LEVEL = "ODMDM_LOG_LEVEL must be a whole number, such as 10 for debug or 20 for info: change it, or unset it."
-#: Said before the page's address, when a browser was asked to open it and when not
+#: Said before the page's address, when the browser is to be asked to open it and when not
 OPENING = "The connector's page is opening in your browser. If it does not, open this address:"
 OPEN = "Open this address in your browser:"
 #: Said when Ctrl+C stops the page while a job is under way
@@ -376,12 +377,13 @@ def page(args: argparse.Namespace) -> int:
             raise _Failed(
                 f"The page cannot listen on port {args.port} of this computer: {exc.strerror}. {advice}"
             ) from exc
-        if args.browser and browser.open_page(server.address, directory):
-            print(f"{OPENING} {server.address}")
-        else:
-            print(f"{OPEN} {server.address}")
+        asked = args.browser and browser.can_open()
+        print(f"{OPENING if asked else OPEN} {server.address}")
         print("Press Ctrl+C to stop it.", flush=True)
         with server:
+            if asked:
+                # Some openers wait for the browser, or never return: the page serves meanwhile
+                threading.Thread(target=browser.open_page, args=(server.address, directory), daemon=True).start()
             try:
                 server.serve_forever()
             except KeyboardInterrupt:

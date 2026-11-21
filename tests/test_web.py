@@ -570,19 +570,25 @@ def test_no_answer_and_no_log_line_holds_a_secret(served: Served, caplog: pytest
         assert all(secret.encode() not in body for body in served.bodies)
 
 
-def _web(rig: WebRig, monkeypatch: pytest.MonkeyPatch, busy: bool = False) -> list[web.Page]:
+def _web(
+    rig: WebRig, monkeypatch: pytest.MonkeyPatch, busy: bool = False, asked: threading.Event | None = None
+) -> list[web.Page]:
     """The web command will serve rig's App until a Ctrl+C, at once, with a job under way or none
 
-    The connector's directory is rig's, and no browser is asked unless a test says so.
+    The connector's directory is rig's. Without asked, there is no desktop and no browser is asked;
+    with it, the Ctrl+C comes once the browser has been asked.
     """
     monkeypatch.setattr(app.App, "default", lambda: rig.app)
     monkeypatch.setattr(store, "directory", lambda: rig.directory)
-    monkeypatch.setattr(browser, "open_page", lambda address, directory: False)
+    if asked is None:
+        monkeypatch.setattr(browser, "can_open", lambda: False)
     monkeypatch.setattr(rig.app, "busy", lambda job=None: busy)
     started: list[web.Page] = []
 
     def serve(page: web.Page, poll_interval: float = 0.5) -> None:
         started.append(page)
+        if asked is not None:
+            assert asked.wait(5), "the browser was never asked"
         raise KeyboardInterrupt
 
     monkeypatch.setattr(web.Page, "serve_forever", serve)
@@ -611,39 +617,44 @@ def test_the_web_command_prints_where_and_how_to_stop(
     assert not printed.err
 
 
-#: The real browser.open_page, which _web replaces
-OPEN_PAGE = browser.open_page
+#: The real browser.can_open, which _web replaces
+CAN_OPEN = browser.can_open
 
 
-def _opener(rig: WebRig, monkeypatch: pytest.MonkeyPatch, answer: bool = True) -> list[tuple[str, bool]]:
-    """The web command asks the browser through browser.open_page, on a desktop, of an opener that answers
+class Opener:
+    """The opener on a desktop: what it was handed and whether the file was there then, and its answer
 
-    What the opener was handed, and whether the file was there then.
+    Once asked, it sets asked; it answers only once released is set.
     """
-    handed: list[tuple[str, bool]] = []
 
-    def opener(url: str, new: int = 0, autoraise: bool = True) -> bool:
-        handed.append((url, (rig.directory / browser.NAME).is_file()))
-        return answer
+    def __init__(self, rig: WebRig, monkeypatch: pytest.MonkeyPatch, answer: bool = True) -> None:
+        self.rig, self.answer = rig, answer
+        self.handed: list[tuple[str, bool]] = []
+        self.asked, self.released = threading.Event(), threading.Event()
+        self.released.set()
+        monkeypatch.setattr(browser, "can_open", CAN_OPEN)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr("webbrowser.open", self)
 
-    monkeypatch.setattr(browser, "open_page", OPEN_PAGE)
-    monkeypatch.setattr(sys, "platform", "darwin")
-    monkeypatch.setattr("webbrowser.open", opener)
-    return handed
+    def __call__(self, url: str, new: int = 0, autoraise: bool = True) -> bool:
+        self.handed.append((url, (self.rig.directory / browser.NAME).is_file()))
+        self.asked.set()
+        self.released.wait(5)
+        return self.answer
 
 
 def test_the_web_command_opens_the_page_in_the_browser_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     rig = WebRig(tmp_path / "config")
-    started = _web(rig, monkeypatch)
-    handed = _opener(rig, monkeypatch)
+    opener = Opener(rig, monkeypatch)
+    started = _web(rig, monkeypatch, asked=opener.asked)
     port = _free_port()
 
     assert console.main(["web", "--port", str(port)]) == 0
 
-    assert handed == [((rig.directory / browser.NAME).as_uri(), True)]
-    assert started[0].key not in handed[0][0]
+    assert opener.handed == [((rig.directory / browser.NAME).as_uri(), True)]
+    assert started[0].key not in opener.handed[0][0]
     assert capsys.readouterr().out.splitlines() == [
         f"{console.OPENING} http://127.0.0.1:{port}/#key={started[0].key}",
         "Press Ctrl+C to stop it.",
@@ -651,22 +662,98 @@ def test_the_web_command_opens_the_page_in_the_browser_by_default(
     assert not (rig.directory / browser.NAME).exists(), "removed when the connector stops"
 
 
-@pytest.mark.parametrize("given", [[], ["--no-browser"]], ids=["the browser says no", "--no-browser"])
-def test_without_a_browser_asked_the_address_is_printed_to_open(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], given: list[str]
+def test_an_opener_that_waits_holds_up_neither_the_address_nor_the_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A BROWSER command webbrowser does not know, a text browser or osascript waits for the browser"""
+    rig = WebRig(tmp_path / "config")
+    opener = Opener(rig, monkeypatch)
+    opener.released.clear()
+    monkeypatch.setattr(app.App, "default", lambda: rig.app)
+    monkeypatch.setattr(store, "directory", lambda: rig.directory)
+    pages: list[web.Page] = []
+    serving = threading.Event()
+    serve = web.Page.serve_forever
+
+    def watched(page: web.Page, poll_interval: float = 0.5) -> None:
+        pages.append(page)
+        serving.set()
+        serve(page, 0.01)
+
+    monkeypatch.setattr(web.Page, "serve_forever", watched)
+    codes: list[int] = []
+    command = threading.Thread(target=lambda: codes.append(console.main(["web", "--port", str(_free_port())])))
+    command.start()
+    try:
+        assert opener.asked.wait(5) and serving.wait(5)
+        page = pages[0]
+        assert capsys.readouterr().out.splitlines() == [f"{console.OPENING} {page.address}", "Press Ctrl+C to stop it."]
+        connection = http.client.HTTPConnection("127.0.0.1", page.port, timeout=5)
+        try:
+            connection.request("GET", "/api/state", headers={"Host": f"127.0.0.1:{page.port}", "X-ODMDM-Key": page.key})
+            assert connection.getresponse().status == 200
+        finally:
+            connection.close()
+        assert command.is_alive() and not codes, "still serving while the opener waits"
+    finally:
+        opener.released.set()
+        if serving.wait(5):
+            pages[0].shutdown()
+        command.join(5)
+    assert codes == [0]
+
+
+def test_without_a_desktop_the_address_is_printed_to_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     rig = WebRig(tmp_path / "config")
     started = _web(rig, monkeypatch)
-    handed = _opener(rig, monkeypatch, answer=False)
+    opener = Opener(rig, monkeypatch)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     port = _free_port()
 
-    assert console.main(["web", *given, "--port", str(port)]) == 0
+    assert console.main(["web", "--port", str(port)]) == 0
 
-    assert len(handed) == (0 if given else 1)
+    assert opener.handed == []
     assert capsys.readouterr().out.splitlines() == [
         f"{console.OPEN} http://127.0.0.1:{port}/#key={started[0].key}",
         "Press Ctrl+C to stop it.",
     ]
+
+
+def test_with_no_browser_the_address_is_printed_to_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig = WebRig(tmp_path / "config")
+    started = _web(rig, monkeypatch)
+    opener = Opener(rig, monkeypatch)
+    port = _free_port()
+
+    assert console.main(["web", "--no-browser", "--port", str(port)]) == 0
+
+    assert opener.handed == []
+    assert capsys.readouterr().out.splitlines() == [
+        f"{console.OPEN} http://127.0.0.1:{port}/#key={started[0].key}",
+        "Press Ctrl+C to stop it.",
+    ]
+    assert not (rig.directory / browser.NAME).exists()
+
+
+def test_when_the_browser_says_no_the_file_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The address was printed before the answer, with the sentence that says what to do if it does not open"""
+    rig = WebRig(tmp_path / "config")
+    opener = Opener(rig, monkeypatch, answer=False)
+    started = _web(rig, monkeypatch, asked=opener.asked)
+    port = _free_port()
+
+    assert console.main(["web", "--port", str(port)]) == 0
+
+    assert len(opener.handed) == 1
+    assert capsys.readouterr().out.splitlines()[0] == f"{console.OPENING} http://127.0.0.1:{port}/#key={started[0].key}"
     assert not (rig.directory / browser.NAME).exists()
 
 

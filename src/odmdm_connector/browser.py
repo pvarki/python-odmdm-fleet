@@ -19,7 +19,7 @@ LOGGER = logging.getLogger(__name__)
 NAME = "open-page.html"
 
 
-def _desktop() -> bool:
+def can_open() -> bool:
     """Whether there is a desktop to open a browser on; without one, webbrowser starts a text browser in the terminal"""
     if sys.platform in ("win32", "darwin"):
         return True
@@ -53,7 +53,7 @@ def open_page(address: str, directory: Path) -> bool:
     Raises nothing that writing the file or starting a browser raises: the connector starts whether
     or not a browser opens.
     """
-    if not _desktop():
+    if not can_open():
         return False
     path = directory / NAME
     try:
