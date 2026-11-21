@@ -34,6 +34,7 @@ The connector's everyday face is a page in your browser, served by this computer
 
     odmdm-connector web
 
+or ``odmdm-connector`` alone, as a double-click on a downloaded file does (see `A file to download`_).
 It opens the page in your default browser and prints its address, and goes on until Ctrl+C.
 ``--port N`` serves it on another port than 8737. The browser does not open by itself on a computer
 without a desktop, with ``--no-browser``, or when the default browser may not read the connector's
@@ -122,6 +123,35 @@ Its limits:
 - Another program on this computer can slow the page down, but without the key it can neither read
   nor drive it. A program that runs as you can read the key from your browser's storage, as it can
   read anything else of yours.
+
+A file to download
+------------------
+
+For an operator who has no Python, the connector is also one self-contained file per system, which
+Deploy App's MDM page offers for download when a deployment serves them: Python, the connector,
+Fleet and keyring are inside, so the token can be kept in the keychain. Started without a command,
+as by a double-click, it opens the page; every command works as above. Each system has its own
+file: ``odmdm-connector-<version>-windows-x64.exe`` as it is, and for macOS and Linux one
+executable named ``odmdm-connector`` in a ``.zip`` or ``.tar.gz``, which keeps it executable through
+a browser's download. Beside them, ``connector.json`` says the version, the MDMs built in, and each
+file's system, size and SHA-256; Deploy App's page reads it.
+
+The files are NOT SIGNED yet, so the system warns at the first start. On macOS it refuses to open
+the file: open **System Settings**, **Privacy & Security**, and press **Open Anyway** for
+``odmdm-connector``. On Windows, SmartScreen says it protected the PC: press **More info**, then
+**Run anyway**. Compare the file's SHA-256 with ``connector.json`` before doing either.
+
+Build the file for the computer you are on from a checkout, with PyInstaller, a build tool kept in
+a dependency group of its own. ``packaging/build.py`` holds the build and is what CI runs::
+
+    uv run --locked --group dist python packaging/build.py
+
+It writes the packed file into ``dist/mdm-connector``. CI builds it on Windows, macOS (Apple
+Silicon and Intel) and Linux, starts each, adds the one file for Python below, and writes the
+manifest into that folder with ``uv run python packaging/manifest.py dist/mdm-connector``: the
+artifact ``mdm-connector`` is the folder a deployment serves. The Linux file needs glibc 2.28 or
+newer: CI builds it in AlmaLinux 8 (glibc 2.28) and starts it there, the keychain included, and in
+Debian 11.
 
 Into a network without internet
 -------------------------------
