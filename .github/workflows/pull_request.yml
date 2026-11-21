@@ -81,6 +81,22 @@ jobs:
           cat plugin.txt
           grep -Fq 'a plugin from odmdm-connector-demo 1.0.0' plugin.txt
           grep -Eq '^d1 +- +Pretend Phone 7' phones.txt
+      # The one file README.rst describes for a network without internet, run by a Python with nothing installed
+      - name: One file with the demo plugin inside, on Python 3.11
+        run: |
+          uv pip install --target build/pyz --no-deps dist/odmdm_connector-*.whl dist/odmdm_connector_demo-*.whl
+          bare() { uv run --no-project --isolated --python 3.11 python "$@"; }
+          bare -m zipapp build/pyz -m "odmdm_connector.console:odmdm_connector_cli" -p "/usr/bin/env python3" -o dist/odmdm-connector.pyz
+          bare dist/odmdm-connector.pyz --version
+          # Built without keyring: the file runs, and has no keychain
+          bare -c "import sys; sys.path.insert(0, 'dist/odmdm-connector.pyz'); from odmdm_connector import store; assert store.platform_backend() is None"
+          bare dist/odmdm-connector.pyz mdms | tr -d '\r' | tr -s ' ' | tee pyz-mdms.txt
+          grep -Eqx 'fleet odmdm-connector [^ ]+ built in' pyz-mdms.txt
+          grep -Fqx 'demo odmdm-connector-demo 1.0.0 plugin' pyz-mdms.txt
+          bare dist/odmdm-connector.pyz --mdm demo phones 2> pyz-plugin.txt | tee pyz-phones.txt
+          cat pyz-plugin.txt
+          grep -Fq 'a plugin from odmdm-connector-demo 1.0.0' pyz-plugin.txt
+          grep -Eq '^d1 +- +Pretend Phone 7' pyz-phones.txt
 
   snyk-test:
     name: Run Snyk test
