@@ -98,7 +98,8 @@ class Mdm(Protocol):
     #: The MDM's name as an operator knows it
     title: ClassVar[str]
     fields: ClassVar[tuple[Field, ...]]
-    #: For each capability in CAPABILITIES this MDM lacks, what to tell the operator instead
+    #: For each capability in CAPABILITIES this MDM lacks, what to tell the operator instead. The
+    #: command line never calls a capability listed here; called anyway, it raises MdmError.
     missing: ClassVar[Mapping[str, str]]
 
     def __init__(self, values: Mapping[str, str]) -> None:
