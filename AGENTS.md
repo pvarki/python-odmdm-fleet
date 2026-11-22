@@ -36,6 +36,16 @@ The command line knows an MDM only through one contract; Fleet is the plugin bui
   `web` does, as a downloaded file is started by a double-click. CI builds every file with uv's own
   Python (`UV_PYTHON_PREFERENCE=only-managed`), one known build on every system instead of each
   runner's, and the Linux file in AlmaLinux 8, as it needs the glibc it was built on or newer.
+  The build is defined once, in `.github/workflows/mdm_connector.yml` (`workflow_call`), which
+  `pull_request.yml` calls on every change and `push_to_main.yml` on the commit it has just tagged
+  (by `github.sha`, so no `+` goes through a checkout ref). Besides `release`, which tags and creates
+  the release, only `publish-mdm-connector` there has `contents: write`: it refuses a folder that
+  Deploy App's UI image would refuse (a file `connector.json` does not name, anything but a plain
+  file, a name outside its pattern), packs the folder as `mdm-connector.tar.gz` (unpacks to
+  `mdm-connector/`) and attaches it with `mdm-connector.tar.gz.sha256` and `SHA256SUMS` (each file's
+  SHA-256 but `connector.json`'s, sorted by name), all three or none. No version in any name, as
+  GitHub may rename an asset with a `+`: only the tag changes in the address. Deploy App's UI image
+  pins that archive's SHA-256, so assets already on a release are never replaced.
 - `fleet_plugin.py`: Fleet behind the contract, registered in `pyproject.toml` as `fleet`. `fleet.py`:
   Fleet's HTTP dialect. `template.py` and the shipped `template.json`: what a deployment's phones need.
 
