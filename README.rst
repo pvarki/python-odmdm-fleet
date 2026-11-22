@@ -52,7 +52,8 @@ App, the MDM, Connect. Have at hand Deploy App's MDM page, open as an admin, you
 an API token for it. Add the Deploy App: on its MDM page press **Open in the MDM connector**, or
 copy its settings line and paste it into the page, and confirm it. Choose the MDM when more than one
 is installed, then fill in what it asks, one field to a card: for Fleet its address, an API token
-and the team, with the rarely changed ones under **More settings**. **Connect** sets the MDM up and
+and the team, which it suggests naming after the deployment (``golden-monkey DeployApp`` for
+golden-monkey.example.fi), with the rarely changed ones under **More settings**. **Connect** sets the MDM up and
 ticks off its steps; it says what is left to do by hand, if anything, or why it failed, and **Show
 the phones** goes on.
 
@@ -63,7 +64,9 @@ callsign, model, when it joined and where its certificate is. Click a row to sel
 double-click it, or select one and press **Details**, to see that phone alone. The line at the
 bottom says what was done last and, at its right end, when the phones were last listed: every
 minute while the page is open, or at once with **Refresh**. **Settings** shows the MDM's
-settings, whether its token is kept on this computer, and where the log is. The Deploy App's name
+settings, whether its token is kept on this computer, and where the log is, and offers **Send the
+policy again** for a phone whose browser refuses its certificate (see `The order that works`_): it
+ticks off its steps as **Connect** does, and the phones keep their certificates and apps. The Deploy App's name
 at the top right lists the Deploy Apps added, opens another, adds one or removes the one open.
 Each Deploy App needs a Fleet of its own: the shipped template names one certificate
 authority for every Deploy App, and the connector refuses to point an authority that serves one
@@ -130,7 +133,9 @@ A file to download
 For an operator who has no Python, the connector is also one self-contained file per system, which
 Deploy App's MDM page offers for download when a deployment serves them: Python, the connector,
 Fleet and keyring are inside, so the token can be kept in the keychain. Started without a command,
-as by a double-click, it opens the page; every command works as above. Each system has its own
+as by a double-click, it opens the page; every command works as above. Started so again while the
+page runs, it says the connector may be running already and, in a terminal window, waits for Enter
+before the window closes. Each system has its own
 file: ``odmdm-connector-<version>-windows-x64.exe`` as it is, and for macOS and Linux one
 executable named ``odmdm-connector`` in a ``.zip`` or ``.tar.gz``, which keeps it executable through
 a browser's download. Beside them, ``connector.json`` says the version, the MDMs built in, and each
@@ -219,8 +224,8 @@ them, and each gets its certificate once it has a name.
 
        odmdm-connector challenge
 
-3. Enrol phones into the ``Deploy App`` team, as many as you like, in any order. Name them once
-   every phone in the team has its apps: naming can send the policy to all of them again.
+3. Enrol phones into the team, ``<deployment> DeployApp`` by default, as many as you like, in
+   any order. Name them once every phone in the team has its apps: naming can send the policy to all of them again.
 
 4. Name them, all at once or a few at a time::
 
@@ -285,7 +290,10 @@ from the file its ``_FILE`` variable names:
     enrolled phone. The tool reads it and never prints, logs or writes it.
 
 ``ODMDM_TEAM``
-    The team phones enrol into and get the certificate in. Default ``Deploy App``.
+    The team phones enrol into and get the certificate in. Default ``<deployment> DeployApp``, the
+    deployment being the first label of ``--domain`` or ``ODMDM_DOMAIN``: ``golden-monkey DeployApp``
+    for golden-monkey.example.fi. Without either, give the team. A deployment set up with the
+    earlier default keeps its team only when it is given: ``--team "Deploy App"``.
 
 ``ODMDM_TEMPLATE``
     The document saying what to install, see below. Default: the one shipped with the connector.
@@ -391,8 +399,9 @@ it wrong.
    the policy as verified on that phone and never sends it again, so the phone has its certificate
    but Chrome may not use it, and Deploy App says "Certificate Authentication Failed". ``name`` and
    ``resend`` send the policy again, to every phone in the team, when a phone enrolled after it
-   was last sent. By hand it is ``apply --force-policy``, or deleting the policy in Fleet and
-   uploading it again.
+   was last sent. By hand it is **Send the policy again** in the page's **Settings**,
+   ``apply --force-policy``, or deleting the policy in Fleet and uploading it again. Sending it
+   again is a repair and makes no team: a team Fleet lacks is refused before anything is changed.
 3. **A policy rewritten while apps are installing stops them installing.** Leave the phones alone
    until the apps have arrived.
 
@@ -428,9 +437,15 @@ What Fleet does that you would not guess
 Write a plugin
 --------------
 
-An MDM fits if it can do three things: take a static SCEP challenge for its certificate
-authority, put a per-device value that its API can set into the certificate subject (the
-callsign, as the common name), and ask a device for its certificate again.
+An MDM fits if it can do five things:
+
+1. Keep one Deploy App's phones in a group of its own, with its own enrolment.
+2. Send each phone's certificate request to Deploy App's SCEP URL with one static challenge, the
+   same for every phone.
+3. Put a value that its API can set for each phone into the certificate subject: the callsign, as
+   the common name.
+4. Take a new challenge for each enrolment window, by API or by hand.
+5. Ask one phone for its certificate again and leave the others alone.
 
 A plugin is one class that satisfies ``Mdm`` in ``src/odmdm_connector/mdm.py``, which is standard
 library only:
@@ -438,9 +453,12 @@ library only:
 - ``API_VERSION = 1``, a ``title``, the ``fields`` it needs (each a ``Field``; mark a token
   ``secret``, one that must be given ``required``, and one rarely changed ``advanced``, which the
   window shows only when asked) and ``missing``: for each of ``setup``,
-  ``set_challenge`` and ``ask_again`` it cannot do, the sentence the operator reads instead.
+  ``set_challenge``, ``ask_again`` and ``send_policy`` it cannot do, the sentence the operator reads
+  instead. A default may hold ``{deployment}``, which the connector fills in with the deployment's
+  name, the first label of the Deploy App's host: ``{deployment} DeployApp`` is Fleet's team.
 - ``__init__(values)`` takes the fields' values by key.
-- ``setup(window, force, dry_run)`` yields ``Step`` objects; ``set_challenge(window)``; ``phones()``
+- ``setup(window, force, dry_run)`` yields ``Step`` objects, ``force`` sending the policy again
+  even if unchanged, unless ``send_policy`` is missing; ``set_challenge(window)``; ``phones()``
   answers ``Phone`` objects, oldest first, each with a ``State``; ``name(names)`` and ``ask_again(ids)``
   answer the lines to show.
 - It raises only ``MdmError``. One that stops half-way through ``name`` says in ``named`` which
