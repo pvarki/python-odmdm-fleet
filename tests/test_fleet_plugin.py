@@ -8,7 +8,7 @@ from odmdm_connector.fleet_plugin import FleetPlugin
 from odmdm_connector.mdm import Mdm, MdmError, State
 from odmdm_connector.settings import Settings
 
-from .test_fleet import Request, Response, _Fleet, _host, _mdm
+from .test_fleet import Request, Response, _Fleet, _host, _mdm, _policy_uploads
 
 NO_NAME = "Could not replace certificate variables: host 6f1c does not have an IDP user for variable FLEET_VAR_X"
 REFUSED = "SCEP enrollment failed: Enrollment failed with SCEP failInfo: badMessageCheck"
@@ -155,6 +155,7 @@ def test_a_token_refused_while_the_policy_is_replaced_is_marked(fleet: _Fleet, m
         ({"mdm_url": ""}, "The Fleet address is missing"),
         ({"mdm_url": "http://mdm.test"}, "must start with https://"),
         ({"token": ""}, "The Fleet API token is missing"),
+        ({"team": ""}, "The Fleet team is missing"),
     ],
 )
 def test_fleet_is_reached_only_when_configured(fleet: _Fleet, values: dict[str, str], says: str) -> None:
@@ -183,10 +184,51 @@ def test_the_template_and_key_alias_are_advanced() -> None:
 
 
 def test_the_token_help_says_which_token_lasts() -> None:
-    """The token My account gives ends after some days, and the refusal then says so"""
+    """The token My account gives ends with that sign-in, as the refusal then says"""
     [token] = [each for each in FleetPlugin.fields if each.key == "token"]
 
     assert token.help == (
-        "A global admin's API token: in Fleet, My account, Get API token. That one ends after some days; "
-        "an API-only user's does not."
+        "A global admin's API token: in Fleet, My account, Get API token. That one ends with that sign-in, "
+        "after 5 days by default; an API-only user's does not."
     )
+
+
+def test_the_team_is_named_after_the_deployment_by_default() -> None:
+    """golden-monkey.example.fi's team is golden-monkey DeployApp; it must be given, and the connector suggests it"""
+    [team] = [each for each in FleetPlugin.fields if each.key == "team"]
+
+    assert team.required
+    assert team.default_for("golden-monkey.example.fi") == "golden-monkey DeployApp"
+
+
+def test_sending_the_policy_again_makes_no_team(fleet: _Fleet) -> None:
+    """A repair creates nothing: a team Fleet lacks is refused before the authority or anything else is changed"""
+    fleet.authorities = [{"id": 3, "name": "RMSCEP", "url": "https://example.fi/scep", "challenge": "old"}]
+
+    with pytest.raises(MdmError) as raised:
+        list(_plugin(team="golden-monkey DeployApp").setup(WINDOW, force=True))
+
+    assert str(raised.value) == (
+        "Fleet has no team named golden-monkey DeployApp, so nothing was changed: sending the policy again makes "
+        "no team. Check the team's name."
+    )
+    assert not raised.value.unauthorized
+    assert not [call for call in fleet.calls if call[0] != "GET"]
+    assert fleet.authorities[0]["challenge"] == "old"
+
+
+def test_setup_with_force_sends_the_unchanged_policy_again_and_no_challenge(fleet: _Fleet) -> None:
+    """apply --force-policy, and Send the policy again on the page: for a phone whose policy Fleet overwrote"""
+    fleet.authorities = [{"id": 3, "name": "RMSCEP", "url": "https://example.fi/scep", "challenge": "old"}]
+    bare = Settings("https://example.fi/scep", "")
+    list(_plugin().setup(bare))
+    before = _policy_uploads(fleet)
+
+    list(_plugin().setup(bare))
+    unforced = _policy_uploads(fleet)
+    steps = list(_plugin().setup(bare, force=True))
+
+    assert unforced == before, "unchanged, so not sent"
+    assert _policy_uploads(fleet) == before + 1
+    assert steps[-1].label.startswith("Applied to team rmscep (7): ")
+    assert fleet.authorities[0]["challenge"] == "old"

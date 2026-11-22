@@ -11,7 +11,7 @@ from typing import ClassVar
 from urllib.parse import urlparse
 
 from . import template
-from .fleet import FleetError, FleetMdm, Unauthorized
+from .fleet import FleetError, FleetMdm, NoTeam, Unauthorized
 from .fleet import Phone as FleetPhone
 from .mdm import API_VERSION, Field, MdmError, Phone, State, Step
 from .settings import Settings
@@ -69,12 +69,18 @@ class FleetPlugin:
             "API token",
             secret=True,
             help=(
-                "A global admin's API token: in Fleet, My account, Get API token. That one ends after some days; "
-                "an API-only user's does not."
+                "A global admin's API token: in Fleet, My account, Get API token. That one ends with that sign-in, "
+                "after 5 days by default; an API-only user's does not."
             ),
             required=True,
         ),
-        Field("team", "Team", default="Deploy App", help="The team phones enrol into and get the certificate in"),
+        Field(
+            "team",
+            "Team",
+            default="{deployment} DeployApp",
+            help="The team phones enrol into and get the certificate in",
+            required=True,
+        ),
         Field(
             "template",
             "Template",
@@ -92,7 +98,7 @@ class FleetPlugin:
     missing: ClassVar[Mapping[str, str]] = {}
 
     def __init__(self, values: Mapping[str, str]) -> None:
-        given = {item.key: values.get(item.key) or item.default for item in self.fields}
+        given = {item.key: values.get(item.key) or item.default_for("") for item in self.fields}
         self._url = given["mdm_url"]
         self._token = given["token"]
         self.team = given["team"]
@@ -113,6 +119,8 @@ class FleetPlugin:
             )
         if not self._token:
             raise MdmError("The Fleet API token is missing")
+        if not self.team:
+            raise MdmError("The Fleet team is missing")
         self._api = FleetMdm(self._url, self._token)
         return self._api
 
@@ -129,7 +137,8 @@ class FleetPlugin:
         """State what the template says, in the order FleetMdm.apply knows works
 
         force sends the policy again even if Fleet's copy is unchanged, to reach a phone that just
-        joined.
+        joined. It is a repair, so it makes no team: a team Fleet lacks is refused before anything
+        is changed.
         """
         wanted = self._template(window)
         lines = [f"  {app.package}{' (at enrolment)' if app.preinstall else ' (on demand)'}" for app in wanted.apps]
@@ -141,11 +150,21 @@ class FleetPlugin:
             return
         try:
             result = self._fleet().apply(
-                self.team, wanted, force_policy=force, scep_url=window.scep_url, challenge=window.challenge
+                self.team,
+                wanted,
+                force_policy=force,
+                scep_url=window.scep_url,
+                challenge=window.challenge,
+                create_team=not force,
             )
+        except NoTeam as exc:
+            raise MdmError(
+                f"Fleet has no team named {self.team}, so nothing was changed: sending the policy again makes no "
+                "team. Check the team's name."
+            ) from exc
         except FleetError as exc:
             raise _refused(exc) from exc
-        yield Step(f"Applied to team {result['team_id']}: {len(result['assigned'])} apps assigned", True)
+        yield Step(f"Applied to team {self.team} ({result['team_id']}): {len(result['assigned'])} apps assigned", True)
 
     def set_challenge(self, window: Settings) -> None:
         """Give the template's certificate authority the window's challenge, and change nothing else"""

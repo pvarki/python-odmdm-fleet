@@ -42,6 +42,10 @@ class Unauthorized(FleetError):
     """Fleet answered 401: it does not accept the token"""
 
 
+class NoTeam(FleetError):
+    """Fleet has no team of the name given, and none was to be created"""
+
+
 #: The proxy the environment names, and HTTPS with certificates checked: nothing else. Without a
 #: redirect handler a redirect comes back as an answer and is never followed, so the token goes
 #: nowhere but the MDM URL; without the error handlers an answer of any status comes back as it is.
@@ -93,7 +97,7 @@ def _multipart(
 
 
 #: Said when Fleet answers 401. A token copied from a signed-in account is that sign-in's own, and Fleet ends it
-#: after some days or at sign-out; an API-only user's token does not end.
+#: with that sign-in, after 5 days by default or at sign-out; an API-only user's token does not end.
 UNAUTHORIZED = (
     "the API token is not accepted. A token copied from a signed-in account ends with that sign-in: "
     "give a new one, or an API-only user's, which does not end"
@@ -198,7 +202,7 @@ class FleetMdm:
             if team.get("name") == name:
                 return int(team["id"])
         if not create:
-            raise FleetError(f"no team named {name}: check the team's name")
+            raise NoTeam(f"no team named {name}: check the team's name")
         created = self._call("POST", "/api/latest/fleet/teams", {"name": name})
         team = created.get("team", created)
         LOGGER.info("Created team %s", name)
@@ -292,8 +296,8 @@ class FleetMdm:
             # A token refused meanwhile is still a token refused, which the operator is asked for again.
             kind = Unauthorized if isinstance(exc, Unauthorized) else FleetError
             raise kind(
-                f"policy {name} was being replaced in team {team} and may now be missing ({exc}). "
-                "Run apply to put it back"
+                f"policy {name} was being replaced in team {team} and may now be missing ({exc}): "
+                "sending the policy again puts it back"
             ) from exc
         LOGGER.info("Uploaded policy %s to team %s", name, team)
 
@@ -592,6 +596,7 @@ class FleetMdm:
         force_policy: bool = False,
         scep_url: str = "",
         challenge: str = "",
+        create_team: bool = True,
     ) -> dict[str, Any]:
         """State everything the template says, in the order that actually works
 
@@ -603,11 +608,16 @@ class FleetMdm:
         Given scep_url, the certificate authority is created too, so a fresh deployment needs
         nothing typed into Fleet by hand. Without it the authority must already be there, which
         is the case for an MDM we cannot create one in.
+
+        Without create_team, a team Fleet lacks is NoTeam before anything is changed.
         """
-        # The authority first: refusing it must leave Fleet as it was, a new team included
+        # Without create_team the team is looked up first, so a team missing leaves Fleet as it was
+        team = None if create_team else self.team_id(team_name)
+        # The authority before a team is made: refusing it must leave Fleet as it was, a new team included
         if template.certificate and scep_url:
             self.ensure_authority(template.certificate.authority, scep_url, challenge)
-        team = self.team_id(team_name, create=True)
+        if team is None:
+            team = self.team_id(team_name, create=True)
         if template.certificate:
             self.ensure_certificate(
                 team,
