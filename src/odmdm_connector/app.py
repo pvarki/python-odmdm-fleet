@@ -26,7 +26,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from . import core, plugins, settings, store
-from .mdm import ASK_AGAIN, SET_CHALLENGE, SETUP, Field, Mdm, MdmError, Phone, State, Step
+from .mdm import ASK_AGAIN, SEND_POLICY, SET_CHALLENGE, SETUP, Field, Mdm, MdmError, Phone, State, Step
 from .settings import Settings
 
 LOGGER = logging.getLogger(__name__)
@@ -181,6 +181,8 @@ class Job(Enum):
     PHONES = "phones"
     NAME = "name"
     ASK_AGAIN = "ask again"
+    #: Setup again with the policy sent even if unchanged
+    POLICY = "policy"
 
 
 @dataclass(frozen=True)
@@ -350,17 +352,21 @@ def _run(job: Job, work: Callable[[], Result], log_path: Path) -> Result:
         return Result(job, error=f"The MDM plugin failed; the log says more: {log_path}")
 
 
-def _setup(mdm: Mdm, window: Settings, seen: Callable[[tuple[Step, ...]], None]) -> Result:
-    """The MDM's setup, each step shown as it is done, with the steps done before it stopped if it did"""
+def _setup(mdm: Mdm, window: Settings, seen: Callable[[tuple[Step, ...]], None], force: bool = False) -> Result:
+    """The MDM's setup, each step shown as it is done, with the steps done before it stopped if it did
+
+    force: the policy is sent again even if unchanged, as a POLICY job.
+    """
+    job = Job.POLICY if force else Job.SETUP
     steps: list[Step] = []
     try:
-        for step in mdm.setup(window):
+        for step in mdm.setup(window, force=force):
             steps.append(step)
             seen(tuple(steps))
     except MdmError as exc:
-        LOGGER.warning("Setup failed: %s", exc)
-        return Result(Job.SETUP, error=str(exc), steps=tuple(steps), unauthorized=exc.unauthorized)
-    return Result(Job.SETUP, steps=tuple(steps))
+        LOGGER.warning("%s failed: %s", job.value, exc)
+        return Result(job, error=str(exc), steps=tuple(steps), unauthorized=exc.unauthorized)
+    return Result(job, steps=tuple(steps))
 
 
 def _name(mdm: Mdm, wanted: list[tuple[str, str]]) -> Result:
@@ -562,10 +568,18 @@ class App:
         left = [account for account in accounts if not self.keychain.forget(account)]
         return not left
 
+    def _default(self, item: Field) -> str:
+        """The field's default for the active Deploy App, the deployment's name filled in"""
+        return item.default_for(self.saved.active)
+
     def form(self, name: str) -> Form:
-        """The MDM's fields with their values: saved ones if it is the active connection's MDM, else the defaults"""
+        """The MDM's fields with their values: saved ones if it is the active connection's MDM, else the defaults
+
+        Each field's default is the active Deploy App's.
+        """
         chosen = self._class(name)
         saved = self.conn.values if self.conn.mdm == name else {}
+        fields = [replace(item, default=self._default(item)) for item in chosen.fields]
         return Form(
             name,
             chosen.title,
@@ -573,7 +587,7 @@ class App:
                 FieldValue(item, self._secret(name, item), self._remembered(name, item))
                 if item.secret
                 else FieldValue(item, saved.get(item.key, item.default))
-                for item in chosen.fields
+                for item in fields
             ),
         )
 
@@ -587,7 +601,9 @@ class App:
         """The MDM, made from the saved values and the secrets, and held"""
         values = {}
         for item in chosen.fields:
-            values[item.key] = self._secret(name, item) if item.secret else self.conn.values.get(item.key, item.default)
+            values[item.key] = (
+                self._secret(name, item) if item.secret else self.conn.values.get(item.key, self._default(item))
+            )
             if item.secret:
                 self.redact.add(values[item.key])
         try:
@@ -635,8 +651,10 @@ class App:
                 f"To set {chosen.title} up, open enrolment on the MDM page of Deploy App {self.saved.active}, "
                 "then press Open in the MDM connector there."
             )
-        plain = {item.key: values.get(item.key, item.default) for item in chosen.fields if not item.secret}
-        saved = {item.key: self.conn.values.get(item.key, item.default) for item in chosen.fields if not item.secret}
+        plain = {item.key: values.get(item.key, self._default(item)) for item in chosen.fields if not item.secret}
+        saved = {
+            item.key: self.conn.values.get(item.key, self._default(item)) for item in chosen.fields if not item.secret
+        }
         same = self.conn.mdm == name and plain == saved
         given = dict(plain)
         for item in chosen.fields:
@@ -674,6 +692,37 @@ class App:
     @property
     def connected(self) -> bool:
         return self.mdm is not None
+
+    def policy_note(self) -> str:
+        """What sending the policy again does, while the MDM connected can; empty when it cannot"""
+        if self.mdm is None or SETUP in self.mdm.missing or SEND_POLICY in self.mdm.missing:
+            return ""
+        return (
+            "For a phone whose browser refuses its certificate: the MDM sends the policy to every phone again. "
+            "Phones keep their certificates. Not while phones are still installing apps: it stops their installs."
+        )
+
+    def send_policy(self) -> str:
+        """Set the MDM up again with its policy sent even if unchanged, on the worker, as apply --force-policy does
+
+        For a phone whose policy the MDM overwrote. No challenge goes with it, so a window pasted
+        earlier never takes the place of a newer one, and enrolment need not be open. One at a
+        time: asked again while it or a setup waits or runs, nothing more is sent, as every send
+        rewrites the policy and a policy rewritten again and again stops the phones' installs.
+        """
+        if self.mdm is None:
+            raise AppError("Connect to the MDM first.")
+        for capability in (SETUP, SEND_POLICY):
+            if capability in self.mdm.missing:
+                raise AppError(self.mdm.missing[capability])
+        said = f"Sending the policy again for Deploy App {self.saved.active}."
+        if self._pending[Job.POLICY] or self._pending[Job.SETUP]:
+            return self._say(said)
+        mdm = self.mdm
+        window = Settings(self.window.scep_url if self.window else f"https://{self.saved.active}/scep", "")
+        self._progress = ()
+        self._submit(Job.POLICY, lambda: _setup(mdm, window, self._show, force=True))
+        return self._say(said)
 
     # The Deploy Apps
 
@@ -1039,6 +1088,8 @@ class App:
             self._say(f"Do the steps by hand to finish setting {title} up for Deploy App {result.host}.")
         elif result.job is Job.SETUP:
             self._say(f"{title} is set up for Deploy App {result.host}.")
+        elif result.job is Job.POLICY:
+            self._say(f"{title} has sent the policy again to the phones of Deploy App {result.host}.")
         elif result.job is Job.CHALLENGE:
             self._say(f"{title} has the new challenge.")
         elif result.job is Job.NAME:

@@ -16,7 +16,7 @@ import pytest
 
 from odmdm_connector import app, plugins, store
 from odmdm_connector.fleet_plugin import FleetPlugin
-from odmdm_connector.mdm import ASK_AGAIN, SET_CHALLENGE, SETUP, Field, Mdm, MdmError, Phone, State, Step
+from odmdm_connector.mdm import ASK_AGAIN, SEND_POLICY, SET_CHALLENGE, SETUP, Field, Mdm, MdmError, Phone, State, Step
 from odmdm_connector.settings import Settings
 from odmdm_connector.testing import FakeMdm
 from odmdm_connector.testing.fake import PHONES
@@ -1378,3 +1378,132 @@ def test_a_setup_shows_its_steps_as_they_are_done(rig: Rig) -> None:
     assert rig.app.progress in ((), (Step("Group found", True, "with [secret]"),)), "the last setup's steps are gone"
     go.set()
     rig.settle()
+
+
+class Forced(FakeMdm):
+    """Records the window and force of every setup"""
+
+    setups: ClassVar[list[tuple[Settings, bool]]] = []
+
+    def setup(self, window: Settings, force: bool = False, dry_run: bool = False) -> Iterator[Step]:
+        Forced.setups.append((window, force))
+        return super().setup(window, force, dry_run)
+
+
+def test_the_policy_is_sent_again_as_apply_force_policy_with_its_steps(keyed: Rig) -> None:
+    """A setup with force and no challenge, so a window pasted earlier never replaces a newer one"""
+    keyed.classes["fake"] = Forced
+    keyed.connected()
+    Forced.setups.clear()
+
+    note = keyed.app.policy_note()
+    said = keyed.app.send_policy()
+    [result] = keyed.settle()
+
+    assert note == (
+        "For a phone whose browser refuses its certificate: the MDM sends the policy to every phone again. "
+        "Phones keep their certificates. Not while phones are still installing apps: it stops their installs."
+    )
+    assert said == "Sending the policy again for Deploy App unit.example.fi."
+    assert Forced.setups == [(Settings("https://unit.example.fi/scep", ""), True)]
+    assert (result.job, result.error) == (app.Job.POLICY, "")
+    assert result.steps[-1] == Step("Certificate template stated", True, "forced")
+    assert keyed.app.status == "Fake MDM has sent the policy again to the phones of Deploy App unit.example.fi."
+
+    # After a restart, with enrolment closed and no window pasted: the command line needs none either
+    keyed.app.close()
+    keyed.app = keyed.start()
+    keyed.app.send_policy()
+    keyed.settle()
+    assert Forced.setups[-1] == (Settings("https://unit.example.fi/scep", ""), True)
+
+
+def test_the_policy_is_sent_again_one_job_at_a_time(keyed: Rig) -> None:
+    """Every send rewrites the policy: asked again while one waits or runs, or a setup does, nothing more is sent"""
+    keyed.classes["fake"] = Forced
+    keyed.connected()
+    Forced.setups.clear()
+
+    first = keyed.app.send_policy()
+    second = keyed.app.send_policy()
+    keyed.settle()
+
+    assert first == second == "Sending the policy again for Deploy App unit.example.fi."
+    assert Forced.setups == [(Settings("https://unit.example.fi/scep", ""), True)]
+
+    keyed.app.paste_settings(LINE, NOW)
+    keyed.app.connect("fake", VALUES)
+    during_setup = keyed.app.send_policy()
+    keyed.settle()
+
+    assert during_setup == "Sending the policy again for Deploy App unit.example.fi."
+    assert [force for _, force in Forced.setups] == [True, False], "the setup only, nothing forced beside it"
+
+
+class PolicyRefused(FakeMdm):
+    def setup(self, window: Settings, force: bool = False, dry_run: bool = False) -> Iterator[Step]:
+        yield Step("Group found", True)
+        if force:
+            raise MdmError("Fleet refused: the policy cannot be uploaded")
+
+
+def test_a_policy_the_mdm_refuses_is_its_reason(rig: Rig) -> None:
+    rig.classes["fake"] = PolicyRefused
+    rig.connected()
+
+    rig.app.send_policy()
+    [result] = rig.settle()
+
+    assert (result.job, result.steps) == (app.Job.POLICY, (Step("Group found", True),))
+    assert result.error == rig.app.status == "Fleet refused: the policy cannot be uploaded"
+
+
+@pytest.mark.parametrize(
+    ("lacking", "says"), [(SEND_POLICY, "The fake MDM cannot send_policy"), (SETUP, "The fake MDM cannot setup")]
+)
+def test_the_policy_is_not_offered_by_an_mdm_that_cannot_send_it(rig: Rig, lacking: str, says: str) -> None:
+    with pytest.raises(app.AppError, match="^Connect to the MDM first.$"):
+        rig.app.send_policy()
+    assert rig.app.policy_note() == ""
+    rig.classes["fake"] = FakeMdm.lacking(lacking)
+    rig.app.paste_settings(LINE, NOW)
+    rig.app.connect("fake", VALUES)
+    rig.settle()
+
+    assert rig.app.policy_note() == ""
+    with pytest.raises(app.AppError, match=f"^{says}$"):
+        rig.app.send_policy()
+    assert not rig.app.busy()
+
+
+#: The Fleet plugin's fields on the fake MDM: whatever reads them gets the team's default
+FleetFields = type("FleetFields", (FakeMdm,), {"fields": FleetPlugin.fields})
+GOLDEN = LINE.replace("unit.example.fi", "golden-monkey.example.fi")
+
+
+def test_the_team_suggested_is_named_after_the_deployment(rig: Rig) -> None:
+    rig.classes["fake"] = FleetFields
+    rig.app.paste_settings(GOLDEN, NOW)
+
+    form = {each.field.key: each for each in rig.app.form("fake").fields}
+    rig.app.connect("fake", {"mdm_url": "https://mdm.example.fi", "token": "t0ken"})  # pragma: allowlist secret
+    rig.settle()
+
+    assert (form["team"].value, form["team"].field.default) == ("golden-monkey DeployApp", "golden-monkey DeployApp")
+    assert form["key_alias"].value == "rmscep"
+    assert rig.app.saved.connections["golden-monkey.example.fi"].values["team"] == "golden-monkey DeployApp"
+    assert isinstance(rig.app.mdm, FakeMdm) and rig.app.mdm.values["team"] == "golden-monkey DeployApp"
+
+
+def test_a_team_saved_or_typed_stays_as_it_is(rig: Rig) -> None:
+    rig.classes["fake"] = FleetFields
+    rig.app.paste_settings(GOLDEN, NOW)
+    rig.app.connect("fake", {"mdm_url": "https://mdm.example.fi", "token": "t0ken", "team": "Deploy App"})
+    rig.settle()
+
+    [team] = [each for each in rig.app.form("fake").fields if each.field.key == "team"]
+
+    assert team.value == "Deploy App"
+    assert rig.app.saved.connections["golden-monkey.example.fi"].values["team"] == "Deploy App"
+    with pytest.raises(app.AppError, match="^Fill in Team.$"):
+        rig.app.connect("fake", {"mdm_url": "https://mdm.example.fi", "token": "t0ken", "team": " "})
