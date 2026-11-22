@@ -490,7 +490,7 @@ def _parser() -> argparse.ArgumentParser:
         help="Re-upload the policy even if unchanged, to reach a host that just joined",
     )
     sub.add_argument("--dry-run", action="store_true", help="Read and validate the template, then stop")
-    command("challenge", challenge, "--template", "--mdm-url", "--domain")
+    command("challenge", challenge, "--template", "--mdm-url", "--team", "--domain")
     command("phones", phones, "--mdm-url", "--team")
     sub = command("name", name, "--mdm-url", "--team")
     sub.add_argument("pairs", nargs="*", metavar="ID=CALLSIGN")

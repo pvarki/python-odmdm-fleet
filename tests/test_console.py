@@ -799,6 +799,21 @@ def test_challenge_takes_the_settings_line(
     assert SECRET not in caplog.text
 
 
+def test_challenge_takes_the_team(window: _Fleet, run: Run) -> None:
+    """The team's certificate template says which authority gets the challenge, so the team is given as elsewhere"""
+    window.teams.append({"id": 8, "name": "North"})
+    window.authorities.append({"id": 4, "name": "ODMDM_NORTH", "url": "https://north.example.fi/scep"})
+    window.certificates = [
+        {"id": 82, "name": "rmscep", "team_id": 8, "subject_name": NAMED, "certificate_authority_id": 4}
+    ]
+
+    result = run(["challenge", "--team", "North"], env={"ODMDM_CHALLENGE": LINE})
+
+    assert result.exit_code == 1
+    assert "the team takes its certificates from authority ODMDM_NORTH" in result.stderr
+    assert not _changes(window)
+
+
 def test_challenge_is_never_an_argument(window: _Fleet, run: Run) -> None:
     """An argument is in the process list and the shell history"""
     result = run(["challenge", "--challenge", LINE])
