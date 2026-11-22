@@ -130,7 +130,7 @@ def test_apply_states_the_template(fleet: _Fleet, tmp_path: Path, monkeypatch: p
     result = run(["apply"])
 
     assert result.exit_code == 0, result.output
-    assert "Applied to team 7" in result.output
+    assert "Applied to team rmscep (7): 1 apps assigned" in result.output
     assert fleet.authorities[0]["challenge"] == "new-window"
     assert fleet.authorities[0]["url"] == "https://example.fi/scep"
 
@@ -621,8 +621,26 @@ def test_a_policy_lost_between_delete_and_upload_is_said(
     assert result.exit_code == 1
     assert result.output.splitlines()[0] == "Phone 31 is OTTER4"
     assert "may now be missing" in result.stderr
-    assert "Run apply to put it back" in result.stderr
+    assert "sending the policy again puts it back" in result.stderr
+    assert "apply" not in result.stderr, "Fleet's sentence names no command"
     assert not fleet.profiles
+
+
+def test_apply_force_policy_makes_no_team(
+    fleet: _Fleet, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run: Run
+) -> None:
+    """Sending the policy again is a repair: a team Fleet lacks is refused before anything is changed"""
+    _template(tmp_path, monkeypatch)
+    monkeypatch.setenv("ODMDM_CHALLENGE", "new-window")
+
+    result = run(["apply", "--force-policy", "--team", "Typo"])
+
+    assert result.exit_code == 1
+    assert result.stderr == (
+        "Fleet has no team named Typo, so nothing was changed: sending the policy again makes no team. "
+        "Check the team's name.\n"
+    )
+    assert not _changes(fleet)
 
 
 @pytest.mark.parametrize("command", [["phones"], ["name", "31=OTTER4"], ["resend"]])
@@ -910,7 +928,7 @@ def test_a_token_file_is_read_in_the_encodings_editors_write(
     token.write_bytes(written)
     monkeypatch.setenv("ODMDM_TOKEN_FILE", str(token))
 
-    assert console._values("fleet", FleetPlugin.fields, {})["token"] == "TOPSECRET"
+    assert console._values("fleet", FleetPlugin.fields, {}, "")["token"] == "TOPSECRET"
 
 
 @pytest.mark.parametrize("unreadable", ["not text", "not readable"])
@@ -937,7 +955,12 @@ def test_a_token_file_that_cannot_be_read_as_text_is_said_without_the_token(
 
 @pytest.mark.parametrize(
     ("command", "capability"),
-    [(["challenge"], "set_challenge"), (["apply"], "setup"), (["resend"], "ask_again")],
+    [
+        (["challenge"], "set_challenge"),
+        (["apply"], "setup"),
+        (["resend"], "ask_again"),
+        (["apply", "--force-policy"], "send_policy"),
+    ],
 )
 def test_a_capability_the_mdm_lacks_is_its_sentence(
     fleet: _Fleet, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: list[str], capability: str, run: Run
@@ -1110,3 +1133,38 @@ def test_help_version_and_a_wrong_command_start_no_page(
     assert result.exit_code == (2 if "nope" in arguments else 0)
     if "nope" in arguments:
         assert "invalid choice: 'nope'" in result.stderr
+
+
+def test_the_team_is_named_after_the_deployment_unless_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    """From --domain, else ODMDM_DOMAIN; a team given with --team, --set or ODMDM_TEAM wins"""
+    monkeypatch.delenv("ODMDM_TEAM", raising=False)
+    host = "golden-monkey.example.fi"
+
+    assert console._values("fleet", FleetPlugin.fields, {}, host)["team"] == "golden-monkey DeployApp"
+    assert console._values("fleet", FleetPlugin.fields, {"team": "Deploy App"}, host)["team"] == "Deploy App"
+    monkeypatch.setenv("ODMDM_TEAM", "rmscep")
+    assert console._values("fleet", FleetPlugin.fields, {}, host)["team"] == "rmscep"
+
+
+def test_the_team_default_is_the_pages_for_any_spelling_of_the_domain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A domain in mixed case gives the page's lower-case team, and an address with its scheme gives none"""
+    monkeypatch.delenv("ODMDM_TEAM", raising=False)
+
+    assert (
+        console._values("fleet", FleetPlugin.fields, {}, "Golden-Monkey.Example.fi")["team"]
+        == "golden-monkey DeployApp"
+    )
+    assert console._values("fleet", FleetPlugin.fields, {}, "https://golden-monkey.example.fi")["team"] == ""
+
+
+def test_the_default_team_reaches_fleet(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch, run: Run) -> None:
+    monkeypatch.delenv("ODMDM_TEAM")
+    fleet.hosts = [_host(31)]
+
+    named = run(["phones"], env={"ODMDM_DOMAIN": "golden-monkey.example.fi"})
+    monkeypatch.delenv("ODMDM_DOMAIN")
+    unnamed = run(["phones"])
+
+    assert ("teams" in str(fleet.calls), named.exit_code) == (True, 1)
+    assert "golden-monkey DeployApp" in named.stderr, "the team asked for, which the stub does not hold"
+    assert (unnamed.exit_code, unnamed.stderr) == (1, "Team is missing: give --set team=... or set ODMDM_TEAM\n")

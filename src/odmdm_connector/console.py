@@ -22,7 +22,7 @@ from odmdm_connector import __version__
 
 from . import browser, core, plugins, settings, store, web
 from .app import App
-from .mdm import ASK_AGAIN, SET_CHALLENGE, SETUP, Field, Mdm, MdmError
+from .mdm import ASK_AGAIN, SEND_POLICY, SET_CHALLENGE, SETUP, Field, Mdm, MdmError
 from .settings import Settings
 
 #: Said when ODMDM_LOG_LEVEL is not a number
@@ -32,6 +32,8 @@ OPENING = "The connector's page is opening in your browser. If it does not, open
 OPEN = "Open this address in your browser:"
 #: Said when Ctrl+C stops the page while a job is under way
 STOPPED_BUSY = "Stopped while the MDM was still being worked with: refresh the phones when the connector runs again."
+#: Asked after the page's port was found taken on a start without a command, so its window does not close unread
+PRESS_ENTER = "Press Enter to close."
 
 
 class _Usage(Exception):
@@ -50,6 +52,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not hasattr(args, "run"):
         # Started with no command, as a downloaded file is by a double-click: the page, with web's defaults
         args = parser.parse_args([*given, "web"])
+        args.alone = True
     try:
         level = int(os.environ.get("ODMDM_LOG_LEVEL", "20"))
     except ValueError:
@@ -98,8 +101,8 @@ def _chosen(name: str) -> type[Mdm]:
         raise _Failed(str(exc)) from exc
 
 
-def _values(name: str, fields: tuple[Field, ...], given: Mapping[str, str]) -> dict[str, str]:
-    """The fields' values: from --set, else ODMDM_<KEY>, else the default
+def _values(name: str, fields: tuple[Field, ...], given: Mapping[str, str], host: str) -> dict[str, str]:
+    """The fields' values: from --set, else ODMDM_<KEY>, else the default for the deployment on host
 
     A secret only ever from the file ODMDM_<KEY>_FILE names, so it stays out of shell history and
     process environments. No value is ever in a message.
@@ -121,7 +124,7 @@ def _values(name: str, fields: tuple[Field, ...], given: Mapping[str, str]) -> d
                     f"The {item.label} holds a line break or another character that cannot be part of it: copy it again."
                 )
         else:
-            values[item.key] = given[item.key] if item.key in given else os.environ.get(env, item.default)
+            values[item.key] = given[item.key] if item.key in given else os.environ.get(env, item.default_for(host))
     return values
 
 
@@ -150,20 +153,23 @@ def _missing(fields: tuple[Field, ...], values: Mapping[str, str]) -> str:
     return ""
 
 
-def _mdm(args: argparse.Namespace, capability: str = "", complete: bool = True) -> Mdm:
-    """The chosen MDM, configured; or the MDM's sentence for lacking the capability
+def _mdm(args: argparse.Namespace, *capabilities: str, complete: bool = True) -> Mdm:
+    """The chosen MDM, configured; or the MDM's sentence for lacking one of the capabilities
 
-    The command's own options such as --team are each the same as --set team=...
+    The command's own options such as --team are each the same as --set team=... A default that
+    names the deployment takes it from --domain, else ODMDM_DOMAIN.
     complete: every required setting must be given, which a dry run does not need.
     """
     given = {key: setting for key, _, setting in (value.partition("=") for value in args.given)}
     chosen = _chosen(args.chosen)
-    if capability in chosen.missing:
-        raise _Failed(chosen.missing[capability])
+    for capability in capabilities:
+        if capability in chosen.missing:
+            raise _Failed(chosen.missing[capability])
     for key in ("mdm_url", "team", "template"):
         if getattr(args, key, None) is not None:
             given[key] = getattr(args, key)
-    values = _values(args.chosen, chosen.fields, given)
+    host = getattr(args, "domain", None) or os.environ.get("ODMDM_DOMAIN", "")
+    values = _values(args.chosen, chosen.fields, given, host)
     missing = _missing(chosen.fields, values) if complete else ""
     if missing:
         raise _Failed(missing)
@@ -218,7 +224,8 @@ def apply(args: argparse.Namespace) -> int:
         window = Settings(f"https://{the_domain}/scep", "")
     else:
         window = _window(os.environ.get("ODMDM_CHALLENGE", ""), the_domain)
-    mdm = _mdm(args, SETUP, complete=not args.dry_run)
+    capabilities = (SETUP, SEND_POLICY) if args.force_policy else (SETUP,)
+    mdm = _mdm(args, *capabilities, complete=not args.dry_run)
     try:
         for step in mdm.setup(window, force=args.force_policy, dry_run=args.dry_run):
             print(step.label if step.done else f"{step.label} (not done)")
@@ -379,9 +386,17 @@ def page(args: argparse.Namespace) -> int:
                 if args.port == web.PORT
                 else "Give another with --port."
             )
-            raise _Failed(
-                f"The page cannot listen on port {args.port} of this computer: {exc.strerror}. {advice}"
-            ) from exc
+            print(
+                f"The page cannot listen on port {args.port} of this computer: {exc.strerror}. {advice}",
+                file=sys.stderr,
+            )
+            # Started without a command, as by a double-click, the window would close before it is read
+            if args.alone and sys.stdin.isatty() and sys.stdout.isatty():
+                try:
+                    input(PRESS_ENTER)
+                except (EOFError, KeyboardInterrupt):
+                    pass
+            return 1
         asked = args.browser and browser.can_open()
         print(f"{OPENING if asked else OPEN} {server.address}")
         print("Press Ctrl+C to stop it.", flush=True)
@@ -492,6 +507,7 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_argument("ids", nargs="*", metavar="ID")
     command("mdms", mdms)
     sub = command("web", page)
+    sub.set_defaults(alone=False)
     sub.add_argument(
         "--port", type=_between(1, 65535), default=web.PORT, help="The port on 127.0.0.1 (default: %(default)s)"
     )
