@@ -1,16 +1,18 @@
 # Agent guidance
 
-Connects FleetDM to an OpenDefence deployment's SCEP enrolment. Read `README.rst` first.
+Connects an MDM, FleetDM built in, to an OpenDefence deployment's SCEP device enrolment. Read
+`README.rst` first.
 
 ## The boundary
 
-The deployment speaks standard SCEP and knows no MDM; this repository is the only place that knows
+The deployment speaks standard SCEP and knows no MDM; this repository and the plugins beside it are
+the only place that knows one, and `fleet.py` and `fleet_plugin.py` the only place here that knows
 Fleet. Keep it that way in both directions:
 
 - Nothing here calls the deployment's API. What crosses over is a SCEP URL, the challenge an
   operator copies from Deploy App, and the callsign in the certificate subject.
-- Nothing Fleet-specific goes back into the deployment's repositories. A Fleet behaviour that
-  needs handling is handled here.
+- Nothing that knows an MDM goes back into the deployment's repositories. An MDM's behaviour that
+  needs handling is handled in that MDM's plugin: Fleet's here.
 - No product knowledge in code. What a deployment installs arrives in the template.
 
 ## Layout

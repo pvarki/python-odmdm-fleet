@@ -5,7 +5,7 @@ satisfies Mdm, published under the entry point group ``odmdm_connector.mdm``. Th
 the class's API_VERSION before it uses it.
 
 Every sentence a plugin hands back, a Step's message, a line from name or ask_again, an MdmError,
-is shown to the operator as it is, by the command line and the window alike, so it names no
+is shown to the operator as it is, by the command line and the page alike, so it names no
 command, option or button. The SCEP challenge is never in one.
 """
 
@@ -64,7 +64,7 @@ class Field:
     """A setup value a plugin needs, such as its MDM's address
 
     A secret is never taken from an option or a plain environment variable, only from a file.
-    A required one must be given: the window does not connect without it, and the command line
+    A required one must be given: the page does not connect without it, and the command line
     says how to give it. DEPLOYMENT in the default stands for the deployment's name, so that
     "{deployment} DeployApp" is "golden-monkey DeployApp" for golden-monkey.example.fi.
     """
@@ -75,7 +75,7 @@ class Field:
     default: str = ""
     help: str = ""
     required: bool = False
-    #: Rarely changed: the window shows it only when asked
+    #: Rarely changed: the page shows it only when asked
     advanced: bool = False
 
     def default_for(self, host: str) -> str:
