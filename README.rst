@@ -2,17 +2,69 @@
 odmdm-connector
 ===============
 
-Connects an MDM, FleetDM built in, to an OpenDefence deployment's device enrolment.
+Connects your MDM, the mobile device management system that sets up your unit's Android phones,
+to a Deploy App deployment (OpenDefence), so that the phones join Deploy App by themselves, each
+under its own callsign, the name Deploy App knows a device by. Fleet (FleetDM) is built in. Any
+other MDM that can do what `What an MDM needs`_ lists needs a plugin, a small Python package:
+install one that exists, or write one (`Write a plugin`_).
+
+It is for the admin who runs a unit's MDM and is an admin in its Deploy App. It runs on that
+admin's own computer, as a page in the browser or from the command line, and keeps one secret: the
+MDM's API token. It:
+
+- sets the MDM up for one Deploy App, as far as the MDM's API allows: where phones ask for their
+  certificates and, with Fleet, also what they install and the policy that lets the apps use the
+  certificate;
+- hands the MDM the challenge of each enrolment window: the secret phones must show while an
+  admin has enrolment open in Deploy App, which the connector holds in memory only;
+- lists the phones that enrolled, and where each one's certificate is;
+- gives phones their callsigns, any number at once, and asks again for the ones that failed.
 
 The deployment knows no MDM. It answers standard SCEP (RFC 8894) at ``https://<domain>/scep``,
 asks for a challenge that is new every time an admin opens enrolment in Deploy App, and makes the
-certificate's common name the device's callsign. Everything that knows Fleet lives here: the
-certificate authority, the certificate template, the apps, the device policy, the launcher icon,
-and naming the phones.
+certificate's common name the device's callsign. Everything that knows an MDM lives here, behind
+one contract, and each MDM in a plugin of its own: Fleet's is built in (`Fleet`_), another MDM's
+is a package beside the connector (`Plugins`_).
 
-Run it from an operator's machine, never inside the deployment: it holds a Fleet API token, and
+Run it from an operator's machine, never inside the deployment: it holds the MDM's API token, and
 something that can reach every device a unit owns has no business running next to an internet
 facing service.
+
+What an MDM needs
+-----------------
+
+An MDM fits, for managed Android phones, if an operator can do five things in it:
+
+1. Keep one Deploy App's phones in a group of its own, with its own enrolment.
+2. Send each phone's certificate request to Deploy App's SCEP URL with one challenge, the same
+   for every phone of an enrolment window.
+3. Put a value that can be set for each phone into the certificate subject: the callsign, as the
+   common name.
+4. Take a new challenge for each enrolment window.
+5. Ask one phone for its certificate again and leave the others alone.
+
+A plugin does through the MDM's API what the MDM lets it do, and at least lists the phones and
+names them. For what it cannot do, the connector says what to do in the MDM by hand, and changes
+nothing. Fleet can do all five by API.
+
+The shortest way
+----------------
+
+1. Get the connector. In Deploy App, as an admin, open **User Management**, then **MDM**, and
+   press **Install the ODMDM connector**: download the file for your computer and start it (`A
+   file to download`_). Or install it with uv (`Install`_) and type ``odmdm-connector``: for an
+   MDM other than Fleet that is the way, as the downloaded files take no plugin (`Plugins`_).
+2. Its page opens in your browser. On Deploy App's MDM page press **Open for 2 hours**, then
+   **Open in the MDM connector**, and confirm your Deploy App on the connector's page.
+3. Give what your MDM asks for, with Fleet its address, an API token and a team (`Fleet`_), and
+   press **Connect**.
+4. Enrol the phones in your MDM, then press **Give callsigns**: with Fleet, only once every phone
+   has its apps (`The order that works`_).
+5. Each phone gets its certificate when it next asks its MDM, with Fleet within about 15 minutes.
+   Close enrolment in Deploy App once the page shows every phone with its certificate: a request
+   that arrives after it closes is refused.
+
+`The page`_ says more of each step, and `Enrolling phones`_ does the same by command.
 
 Install
 -------
@@ -313,66 +365,6 @@ from the file its ``_FILE`` variable names:
     what the first deployments were set up with. Never change it for a deployment: a second key
     will not install over an existing alias.
 
-Plugins
--------
-
-Fleet is built in. Another MDM comes as a plugin: a Python package of its own, named
-``odmdm-connector-<name>``, that the connector finds once it is installed beside it. A plugin is
-code that sees the MDM token, so installing one means trusting it as much as the connector
-itself. Install only one you know the source of. When the MDM chosen is a plugin, every command
-says on stderr which package and version it comes from.
-
-Add one with the same install line and ``--with``::
-
-    uv tool install git+https://github.com/pvarki/python-odmdm-fleet --with odmdm-connector-<name>
-
-See what is installed, without loading any of it::
-
-    odmdm-connector mdms
-
-Choose one with ``--mdm NAME`` before the command, or ``ODMDM_MDM``; the default is ``fleet``.
-Its settings are given as for Fleet: ``--set KEY=VALUE``, or ``ODMDM_<KEY>``, and a secret only
-from the file ``ODMDM_<KEY>_FILE`` names. A plugin's MDM may lack something Fleet can do, such as
-taking the challenge by API; the command then says what to do instead and changes nothing.
-
-The template
-------------
-
-What to install is a property of the deployment, so it is a document rather than code: the apps,
-their managed configuration, the Android Management API device policy, a launcher link, and the
-certificate template. ``{domain}``, ``{mtls_url}`` and ``{key_alias}`` are filled in. Keys
-beginning with ``_`` are comments and never reach Fleet. ``src/odmdm_connector/template.json``, shipped
-in the package, is a working one for Deploy App, with its reasoning in the comments.
-
-The certificate subject is the contract with the deployment. Its common name becomes the callsign:
-3 to 32 letters, digits or hyphens, no hyphen at either end. It is the name ``name`` gives the
-phone, followed by Fleet's id for the host, and the tool refuses any other::
-
-    CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART, OU=$FLEET_VAR_HOST_UUID
-    CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART
-
-The shipped template uses the first: the id lets the deployment tell later which device a callsign
-was issued to. A subject cannot change on a team that has phones, since replacing the certificate
-template removes every phone's certificate, so a team set up without the id keeps the second form
-in a template of its own.
-
-A name the phone supplies, such as its serial number, would make a leaked enrolment link enough
-for an identity.
-
-The shipped template names no certificate authority. The connector finds a Deploy App's authority
-in Fleet by the address it serves, whatever it is called, and makes one when there is none:
-``ODMDM_`` and the first part of the Deploy App's host name, in capitals, as
-``ODMDM_GOLDEN_MONKEY`` for ``golden-monkey.example.fi``. Two Deploy Apps whose host names begin
-alike would get the same name; the second is refused until its template names another:
-``"authority": "NAME"`` beside the certificate's ``name`` and ``subject``, in letters, digits and
-underscores. An authority made earlier as ``RMSCEP``, or by hand, is found by its address and kept:
-the address has to be the Deploy App's exactly, ``https://<host>/scep`` with no slash after it. One
-that differs is refused once a team's certificate template is bound to it, with both addresses said.
-
-The tool also refuses a policy that lets an app use the key without being named in
-``packageNames``, lets the user pick a key for any app (``privateKeySelectionEnabled``), or
-allows installs from unknown sources (``untrustedAppsPolicy`` other than ``DISALLOW_INSTALL``).
-
 The settings line
 -----------------
 
@@ -398,38 +390,184 @@ takes the line from ``ODMDM_CHALLENGE``, else at its hidden prompt, never as an 
 one whose SCEP URL is not on ``ODMDM_DOMAIN``, and says until when the window is open, in this
 computer's time. The line above is the shared test vector, in ``tests/data/settings-line-v1.txt``.
 
+Plugins
+-------
+
+Fleet is built in. Another MDM comes as a plugin: a Python package of its own, named
+``odmdm-connector-<name>``, that the connector finds once it is installed beside it. A plugin is
+code that sees the MDM token, so installing one means trusting it as much as the connector
+itself. Install only one you know the source of. When the MDM chosen is a plugin, every command
+says on stderr which package and version it comes from.
+
+Add one with the same install line and ``--with``::
+
+    uv tool install git+https://github.com/pvarki/python-odmdm-fleet --with odmdm-connector-<name>
+
+See what is installed, without loading any of it::
+
+    odmdm-connector mdms
+
+Choose one with ``--mdm NAME`` before the command, or ``ODMDM_MDM``; the default is ``fleet``.
+Its settings are given as for Fleet: ``--set KEY=VALUE``, or ``ODMDM_<KEY>``, and a secret only
+from the file ``ODMDM_<KEY>_FILE`` names. A plugin's MDM may lack something Fleet can do, such as
+taking the challenge by API; the command then says what to do instead and changes nothing.
+
+Fleet
+-----
+
+Fleet (FleetDM) works as it comes: the connector does in it by API everything `What an MDM
+needs`_ lists. Fleet's behaviour as told here was measured on Fleet 4.90, and the menu names are
+that version's.
+
+Fleet needs three things:
+
+- **Android MDM turned on**: Fleet's **Settings**, **Integrations**, **MDM**. Whoever runs Fleet
+  connects Android Enterprise there once, for all teams.
+- **Fleet Premium**: teams and certificate authorities are part of it.
+- **A global admin's API token.** Fleet keeps certificate authorities outside teams, so giving
+  one a new challenge takes a global admin. **My account**, **Get API token** gives the token of
+  your own sign-in, which Fleet ends after five days by default, or when you sign out; the
+  connector then says the token is not accepted. For a connector that stays set up, whoever runs
+  Fleet makes an API-only user with the role Admin for all of Fleet (**Settings**, **Users**,
+  **Add user**, **API-only user**), whose token does not end.
+
+Fleet's settings
+~~~~~~~~~~~~~~~~
+
+On the page these are its cards; for the commands, each is ``ODMDM_<KEY>`` or ``--set``.
+``--mdm-url``, ``--team`` and ``--template`` after a command that takes them say the same as
+``--set mdm_url``, ``team`` and ``template``.
+
+``ODMDM_MDM_URL``
+    The address you open Fleet at, such as ``https://fleet.example.fi``, without an API path. Only
+    https: the token goes with every request.
+
+``ODMDM_TOKEN_FILE``
+    A file holding the API token.
+
+``ODMDM_TEAM``
+    The team phones enrol into and get the certificate in. Default ``<deployment> DeployApp``:
+    ``golden-monkey DeployApp`` for golden-monkey.example.fi. Without ``ODMDM_DOMAIN``, give the
+    team. A deployment set up with the earlier default keeps its team only when it is given:
+    ``--set team="Deploy App"``.
+
+``ODMDM_TEMPLATE``
+    The document saying what to install, see `The template`_. Default: the one shipped with the
+    connector.
+
+``ODMDM_KEY_ALIAS``
+    The certificate template's name, which becomes the Android keystore alias. Default ``rmscep``,
+    what the first deployments were set up with. Never change it for a deployment: a second key
+    will not install over an existing alias.
+
+A Fleet whose certificate comes from a private authority is trusted by pointing the
+``SSL_CERT_FILE`` environment variable at that authority's certificate file, in PEM form, before
+the connector starts.
+
+What Connect sets up
+~~~~~~~~~~~~~~~~~~~~
+
+**Connect**, or ``apply``, changes Fleet: it makes the team if it is not there, Deploy App as a
+certificate authority, the team's certificate template, its policy, its apps and the **Deploy
+App** launcher icon. The launcher is a web app that Google publishes for good (`What Fleet does
+that you would not guess`_). Sending the policy again is a repair and makes no team.
+
+Each phone gets its certificate at its next check-in with Fleet, within about 15 minutes of being
+named. One that Fleet has made no certificate request for yet only gets its name, which Fleet
+fills in when it makes the request. Name the phones once every phone in the team has its apps:
+naming can send the policy to all of them again (`The order that works`_). A phone that already
+has its certificate under the name it is given is left alone, and renaming one that has its
+certificate says which old callsign to revoke: remove it in Deploy App.
+
+Several Deploy Apps on one Fleet
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+One Fleet can serve several Deploy Apps. Each has a certificate authority of its own in Fleet and
+a team of its own. The connector finds a Deploy App's authority by the address it serves, whatever
+it is called, and makes one when there is none: ``ODMDM_`` and the first part of the Deploy App's
+host name, in capitals, as ``ODMDM_GOLDEN_MONKEY`` for ``golden-monkey.example.fi``. Two Deploy
+Apps whose host names have the same first part, such as ``unit.example.fi`` and
+``unit.example.org``, would get the same authority name, the same default team and the same
+launcher title, and the second is refused. Give it a team of its own and a template of its own
+(`The template`_) that names another authority, ``"authority": "NAME"`` beside the certificate's
+``name`` and ``subject``, in letters, digits and underscores, and another ``title`` in its
+``link_app``.
+
+The connector never points an authority that serves one Deploy App at another. An authority made
+earlier as ``RMSCEP``, or by hand, is found by its address and kept: the address has to be the
+Deploy App's exactly, ``https://<host>/scep`` with no slash after it. Once a team has its
+certificate template, a challenge goes only to the authority that template is bound to, and a
+team whose template is bound to an authority that serves another address is refused before
+anything is changed, with both addresses said.
+
+The API token is a global admin's, so whoever runs the connector for one Deploy App can change
+every team in that Fleet: share a Fleet only among people who trust each other with it.
+
+The template
+~~~~~~~~~~~~
+
+With Fleet, what to install is a property of the deployment, so it is a document rather than
+code: the apps, their managed configuration, the Android Management API device policy, a launcher
+link, and the certificate template. ``{domain}``, ``{mtls_url}`` and ``{key_alias}`` are filled
+in. Keys beginning with ``_`` are comments and never reach Fleet.
+The one shipped in the package, ``src/odmdm_connector/template.json`` in the repository, is a
+working one for Deploy App, with its reasoning in the comments: copy it from there to change what
+a deployment installs, and give your copy as the template.
+
+The certificate subject is the contract with the deployment. Its common name becomes the callsign:
+3 to 32 letters, digits or hyphens, no hyphen at either end. It is the name ``name`` gives the
+phone, optionally followed by Fleet's id for the host::
+
+    CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART, OU=$FLEET_VAR_HOST_UUID
+    CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART
+
+The tool refuses any other subject; it takes ``$FLEET_VAR_HOST_END_USER_IDP_USERNAME`` in place of
+the ``_LOCAL_PART`` form, which is the same text for a callsign. The shipped template uses the
+first: the id travels in the certificate request, so the deployment can tell later which device a
+callsign was issued to. A subject cannot change on a team that has phones, since replacing the
+certificate template removes every phone's certificate, so a team set up without the id keeps the
+second form in a template of its own.
+
+A name the phone supplies, such as its serial number, would make a leaked enrolment link enough
+for an identity.
+
+The tool also refuses a policy that lets an app use the key without being named in
+``packageNames``, lets the user pick a key for any app (``privateKeySelectionEnabled``), or
+allows installs from unknown sources (an ``untrustedAppsPolicy`` that begins ``ALLOW_``, or
+``installUnknownSourcesAllowed``).
+
 The order that works
---------------------
+~~~~~~~~~~~~~~~~~~~~
 
 Three facts about managed Android and Fleet pull against each other. Each was learned by getting
 it wrong.
 
 1. **Apps install at enrolment and at no other time.** The team must carry them before a phone
-   joins. A phone transferred in from a team with another launcher package loses that launcher
-   and never gets this one.
+   joins. A phone moved in from a team that has another launcher loses that launcher and never
+   gets this one.
 2. **Fleet can overwrite a new phone's policy moments after sending it.** It sends a phone that
    enrols the team's policy, and seconds later can write a bare one over it. It goes on showing
    the policy as verified on that phone and never sends it again, so the phone has its certificate
-   but Chrome may not use it, and Deploy App says "Certificate Authentication Failed". ``name`` and
-   ``resend`` send the policy again, to every phone in the team, when a phone enrolled after it
-   was last sent. By hand it is **Send the policy again** in the page's **Settings**,
-   ``apply --force-policy``, or deleting the policy in Fleet and uploading it again. Sending it
-   again is a repair and makes no team: a team Fleet lacks is refused before anything is changed.
+   but Chrome may not use it, and Deploy App says "Certificate Authentication Failed". ``name``
+   and ``resend`` send the policy again, to every phone in the team, when a phone enrolled after
+   it was last sent. A phone that enrols again onto its old host keeps its old enrolment time and
+   is not seen: send the policy again by hand for it. By hand it is **Send the policy again** in
+   the page's **Settings**, ``apply --force-policy``, or deleting the policy in Fleet and
+   uploading it again. Sending it again is a repair and makes no team: a team Fleet lacks is
+   refused before anything is changed.
 3. **A policy rewritten while apps are installing stops them installing.** Leave the phones alone
    until the apps have arrived.
 
 What Fleet does that you would not guess
-----------------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **A launcher web app's URL can never change.** Google publishes it permanently and Fleet cannot
-  delete it. The title carries the deployment's name, so a moved deployment publishes its own
-  launcher and leaves the old one orphaned. Google refuses a title of 30 characters or more.
-- **A web app's display name is unique within a team** (409). A title in a team's setup experience
-  has to be removed there before it can be removed from the team.
-- **A token copied from a signed-in account ends with that sign-in.** **My account → Get API token**
-  gives the token of your own session, which Fleet ends after five days by default, or when you
-  sign out. The connector then says the token is not accepted. For a connector that stays set up,
-  give the token of an API-only user (``fleetctl user create --api-only``), which does not end.
+- **A launcher web app's URL can never change, and its title is taken for good.** Google publishes
+  it permanently and Fleet cannot delete it. The title carries the first part of the deployment's
+  host name, so a deployment moved to a host with another first part publishes its own launcher
+  and leaves the old one orphaned. One moved to a host with the same first part keeps the old
+  launcher, which still opens the old host: give the template's ``link_app`` another ``title``.
+  Fleet refuses a title already published, in any team and even in one since deleted. Google
+  refuses a title of 30 characters or more.
 - **A phone enrols before it has a name**, so its first certificate request fails (``does not
   have an IDP user``) until it is named, and naming it does not send the request again. ``name``
   resends. A resend is one more attempt, which the phone acts on at its next check-in, every 15
@@ -437,15 +575,25 @@ What Fleet does that you would not guess
 - **A returning phone keeps its old team and its old name.** Transfer it into this team if it was
   in another, and give it a new name with ``name``, or it asks for a name that is already taken. It
   can also come back as a new device with no name.
-- **Renaming a phone that has its certificate gives it a second callsign.** Revoke the old one in
-  Deploy App.
 - **Replacing a team's certificate template locks its phones out.** Every phone deletes the
   certificate it has and asks again, and the deployment refuses a name that is already taken. So
   this repository never replaces one to retry a phone: ``resend`` asks for that phone alone.
 - **A refusal shows only as** ``SCEP enrollment failed ... failInfo: badMessageCheck`` on the
-  phone's certificate. Usually a bad or taken name, or Fleet still has the previous window's
-  challenge. A taken name is never freed, not even by revoking it, so give the phone another with
-  ``name``. For the challenge, ``challenge`` and then ``resend``.
+  phone's certificate. For the causes see `Enrolling phones`_; for an old challenge, ``challenge``
+  and then ``resend``.
+
+By hand in Fleet
+~~~~~~~~~~~~~~~~
+
+Without the connector, in Fleet's console: open the phone, **Edit user** to give it its callsign,
+then under **OS settings** pick the certificate and **Resend**. Naming alone does not send the
+request again. Once the phones have enrolled and their apps have arrived, delete the policy in
+Fleet and upload it again: Fleet can overwrite a new phone's policy, see `The order that works`_.
+
+Phones already enrolled in another Fleet team: transfer them into this team in Fleet, then name
+them like the rest. Apps install only at enrolment, so a transferred phone gets its certificate but
+not this team's apps or launcher. For those, remove its work profile after the transfer and enrol
+it again into this team.
 
 Write a plugin
 --------------
