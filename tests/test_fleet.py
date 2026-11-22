@@ -20,7 +20,7 @@ import pytest
 
 from odmdm_connector import __version__
 from odmdm_connector import fleet as fleet_module
-from odmdm_connector.fleet import FleetError, FleetMdm
+from odmdm_connector.fleet import FleetError, FleetMdm, authority_name
 from odmdm_connector.icon import launcher_icon
 from odmdm_connector.template import App, Certificate, LinkApp, MdmTemplate
 
@@ -83,6 +83,7 @@ class _Fleet:
         self.hosts: list[dict[str, Any]] = []
         self.web_apps: list[dict[str, Any]] = []
         self.authorities: list[dict[str, Any]] = [{"id": 3, "name": "RMSCEP", "url": "https://deployment.test/scep"}]
+        self.teams: list[dict[str, Any]] = [{"id": 7, "name": "rmscep"}]
         self._next_id = 100
 
     def handler(self, request: Request) -> Response:
@@ -139,7 +140,8 @@ class _Fleet:
             return Response(200, json=matching[0] if matching else {})
         if path.endswith("/certificate_authorities") and request.method == "POST":
             body = json.loads(request.content)["custom_scep_proxy"]
-            made = {"id": 55, "name": body["name"], "url": body["url"]}
+            self._next_id += 1
+            made = {"id": self._next_id, "name": body["name"], "url": body["url"], "challenge": body["challenge"]}
             self.authorities.append(made)
             return Response(200, json={"certificate_authority": made})
         if "/certificate_authorities/" in path and request.method == "PATCH":
@@ -154,12 +156,18 @@ class _Fleet:
                     authority.update(body)
             return Response(200, json={})
         if path.endswith("/certificates") and request.method == "GET":
-            return Response(200, json={"certificates": self.certificates})
+            # A team's own templates; one a test put there without a team is every team's
+            team = int(request.url.params.get("team_id", "0"))
+            return Response(
+                200, json={"certificates": [c for c in self.certificates if c.get("team_id", team) == team]}
+            )
         if path.endswith("/certificates") and request.method == "POST":
             body = json.loads(request.content)
+            self._next_id += 1
             made = {
-                "id": 27,
+                "id": self._next_id,
                 "name": body["name"],
+                "team_id": body["team_id"],
                 "subject_name": body["subject_name"],
                 "certificate_authority_id": body["certificate_authority_id"],
             }
@@ -170,7 +178,12 @@ class _Fleet:
             self.certificates = [c for c in self.certificates if c["id"] != gone]
             return Response(200, json={})
         if path == "/api/latest/fleet/teams" and request.method == "GET":
-            return Response(200, json={"teams": [{"id": 7, "name": "rmscep"}]})
+            return Response(200, json={"teams": self.teams})
+        if path == "/api/latest/fleet/teams" and request.method == "POST":
+            self._next_id += 1
+            made = {"id": self._next_id, "name": json.loads(request.content)["name"]}
+            self.teams.append(made)
+            return Response(200, json={"team": made})
         if path.endswith("/software/titles"):
             # Fleet scopes the listing to one team. A stub that ignored team_id would let a
             # lookup find another team's app and call that a pass.
@@ -547,8 +560,160 @@ def test_a_new_windows_challenge_reaches_an_authority_already_pointing_at_us(
     assert fleet.authorities[0]["url"] == "https://deployment.test/scep"
 
 
+def test_an_authority_is_named_after_its_deploy_app() -> None:
+    """Fleet takes letters, digits and underscores only"""
+    assert authority_name("https://golden-monkey.example.fi/scep") == "ODMDM_GOLDEN_MONKEY"
+    assert authority_name("https://North.example.fi/scep") == "ODMDM_NORTH"
+
+
+def test_a_second_deploy_app_gets_an_authority_and_a_team_of_its_own(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One Fleet serves several Deploy Apps, and the first one's authority, team and template stay as they are"""
+    fleet = _Fleet()
+    mdm = _mdm(fleet, monkeypatch)
+    mdm.apply("rmscep", _with_cert(""), scep_url="https://deployment.test/scep", challenge="first")
+    first = [dict(c) for c in fleet.certificates]
+
+    mdm.apply("second DeployApp", _with_cert(""), scep_url="https://second.test/scep", challenge="second")
+
+    assert [(a["name"], a["url"], a["challenge"]) for a in fleet.authorities] == [
+        ("RMSCEP", "https://deployment.test/scep", "first"),
+        ("ODMDM_SECOND", "https://second.test/scep", "second"),
+    ]
+    assert [team["name"] for team in fleet.teams] == ["rmscep", "second DeployApp"]
+    assert fleet.certificates[: len(first)] == first
+    [made] = fleet.certificates[len(first) :]
+    assert (made["team_id"], made["certificate_authority_id"]) == (fleet.teams[1]["id"], fleet.authorities[1]["id"])
+
+
+def test_an_authority_under_the_old_shared_name_is_found_by_its_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every Deploy App's authority was once RMSCEP: a template that names none must not make a second one
+
+    A second one would get the team's template replaced, and every phone asked again under a taken name.
+    """
+    fleet = _Fleet()
+    _mdm(fleet, monkeypatch).apply("rmscep", _with_cert(""), scep_url="https://deployment.test/scep", challenge="c9")
+
+    assert [(a["id"], a["name"], a["challenge"]) for a in fleet.authorities] == [(3, "RMSCEP", "c9")]
+    assert [c["certificate_authority_id"] for c in fleet.certificates] == [3]
+
+
+def test_an_authority_made_by_hand_is_found_by_its_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Whatever it was called in Fleet's console; another Deploy App's is asked and left alone"""
+    fleet = _Fleet()
+    fleet.authorities = [
+        {"id": 4, "name": "OTHER_UNIT", "url": "https://other.test/scep"},
+        {"id": 9, "name": "Typed_by_hand", "url": "https://deployment.test/scep"},
+    ]
+    _mdm(fleet, monkeypatch).apply("rmscep", _with_cert(""), scep_url="https://deployment.test/scep", challenge="c9")
+
+    assert [a.get("challenge") for a in fleet.authorities] == [None, "c9"]
+    assert [c["certificate_authority_id"] for c in fleet.certificates] == [9]
+
+
+def test_the_likely_names_are_asked_for_their_address_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The listing has no address, so each one costs a request: another Deploy App's is not asked"""
+    fleet = _Fleet()
+    fleet.authorities.insert(0, {"id": 4, "name": "OTHER_UNIT", "url": "https://other.test/scep"})
+    _mdm(fleet, monkeypatch).apply("rmscep", _with_cert(""), scep_url="https://deployment.test/scep")
+
+    assert ("GET", "/api/latest/fleet/certificate_authorities/3") in fleet.calls
+    assert ("GET", "/api/latest/fleet/certificate_authorities/4") not in fleet.calls
+
+
+def test_an_authority_of_another_kind_has_no_address_to_ask_for(monkeypatch: pytest.MonkeyPatch) -> None:
+    fleet = _Fleet()
+    fleet.authorities = [{"id": 2, "name": "DIGI", "type": "digicert"}]
+    _mdm(fleet, monkeypatch).apply("rmscep", _with_cert(""), scep_url="https://deployment.test/scep", challenge="c")
+
+    assert ("GET", "/api/latest/fleet/certificate_authorities/2") not in fleet.calls
+    assert [a["name"] for a in fleet.authorities] == ["DIGI", "ODMDM_DEPLOYMENT"]
+
+
+def test_a_template_may_name_a_new_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """For two Deploy Apps whose hosts begin alike"""
+    fleet = _Fleet()
+    _mdm(fleet, monkeypatch).apply("north", _with_cert("NORTH_2"), scep_url="https://north.other.test/scep")
+
+    assert [(a["name"], a["url"]) for a in fleet.authorities[1:]] == [("NORTH_2", "https://north.other.test/scep")]
+
+
+def test_a_name_that_serves_another_address_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two Deploy Apps whose hosts begin alike would share a name, and it is never repointed"""
+    fleet = _Fleet()
+    fleet.authorities = [{"id": 4, "name": "ODMDM_NORTH", "url": "https://north.example.fi/scep"}]
+    with pytest.raises(FleetError) as raised:
+        _mdm(fleet, monkeypatch).apply("north", _with_cert(""), scep_url="https://north.other.test/scep", challenge="c")
+
+    assert str(raised.value) == (
+        "certificate authority ODMDM_NORTH already serves https://north.example.fi/scep: give this Deploy App a "
+        "template that names another authority, or delete that authority in Fleet if the Deploy App moved"
+    )
+    assert not [c for c in fleet.calls if c[0] != "GET"], "nothing changed in Fleet"
+
+
+def test_a_team_of_another_deploy_app_is_refused_even_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replacing its template would enrol that Deploy App's phones into this one"""
+    fleet = _Fleet()
+    mdm = _mdm(fleet, monkeypatch)
+    mdm.apply("rmscep", _with_cert(""), scep_url="https://deployment.test/scep")
+    before = [dict(c) for c in fleet.certificates]
+    fleet.calls.clear()
+
+    with pytest.raises(FleetError) as raised:
+        mdm.apply("rmscep", _with_cert(""), scep_url="https://second.test/scep", challenge="c2")
+
+    assert str(raised.value) == (
+        "the team takes its certificates from authority RMSCEP, which serves https://deployment.test/scep, not "
+        "https://second.test/scep, so nothing was changed. If that authority is this Deploy App's, correct its "
+        "address in Fleet; if not, choose another team."
+    )
+    assert fleet.certificates == before
+    assert fleet.authorities == [{"id": 3, "name": "RMSCEP", "url": "https://deployment.test/scep"}]
+    assert not [c for c in fleet.calls if c[0] != "GET"], "nothing changed in Fleet, no authority made beside it"
+
+
+@pytest.mark.parametrize(
+    "held", ["https://deployment.test/scep/", "https://deployment.test:443/scep", "https://deployment.test/SCEP"]
+)
+def test_an_address_that_differs_by_little_is_refused_aloud(monkeypatch: pytest.MonkeyPatch, held: str) -> None:
+    """An authority typed by hand with a slash too many is not this address
+
+    Making a new one beside it would give that one the challenge, and the team's phones, which ask
+    the one their template is bound to, would be refused with nothing to show why.
+    """
+    fleet = _Fleet()
+    fleet.authorities = [{"id": 3, "name": "Typed_by_hand", "url": held}]
+    fleet.certificates = [
+        {"id": 81, "name": "rmscep", "subject_name": "CN=$VAR,OU=$OTHER", "certificate_authority_id": 3}
+    ]
+
+    with pytest.raises(FleetError, match="which serves " + re.escape(held) + ", not https://deployment.test/scep"):
+        _mdm(fleet, monkeypatch).apply(
+            "rmscep", _with_cert(""), scep_url="https://deployment.test/scep", challenge="c2"
+        )
+
+    assert not [c for c in fleet.calls if c[0] != "GET"], "nothing changed in Fleet"
+
+
+def test_the_challenge_goes_to_the_authority_the_team_is_bound_to(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two authorities typed for one address: the team's phones ask only the one its template names"""
+    fleet = _Fleet()
+    fleet.authorities = [
+        {"id": 3, "name": "RMSCEP", "url": "https://deployment.test/scep"},
+        {"id": 9, "name": "Second_of_the_same", "url": "https://deployment.test/scep"},
+    ]
+    fleet.certificates = [
+        {"id": 81, "name": "rmscep", "subject_name": "CN=$VAR,OU=$OTHER", "certificate_authority_id": 9}
+    ]
+
+    _mdm(fleet, monkeypatch).apply("rmscep", _with_cert(""), scep_url="https://deployment.test/scep", challenge="c2")
+
+    assert [a.get("challenge") for a in fleet.authorities] == [None, "c2"]
+    assert [c["certificate_authority_id"] for c in fleet.certificates] == [9], "the template was left as it is"
+
+
 def test_an_authority_that_serves_another_deploy_app_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The shipped template names the same authority for every Deploy App
+    """A template that names an authority gets that one or none
 
     Repointing it would send the phones of the Deploy App it serves to the one connected now.
     """
@@ -557,9 +722,8 @@ def test_an_authority_that_serves_another_deploy_app_is_refused(monkeypatch: pyt
         _mdm(fleet, monkeypatch).apply("rmscep", _with_cert(), scep_url="https://moved.test/scep", challenge="rotated")
 
     assert str(raised.value) == (
-        "certificate authority RMSCEP already serves https://deployment.test/scep: connect this Deploy App to a "
-        "Fleet of its own, give it a template that names another authority, or delete that authority in Fleet if "
-        "the Deploy App moved"
+        "certificate authority RMSCEP already serves https://deployment.test/scep: give this Deploy App a "
+        "template that names another authority, or delete that authority in Fleet if the Deploy App moved"
     )
     assert fleet.authorities == [{"id": 3, "name": "RMSCEP", "url": "https://deployment.test/scep"}]
     assert not [c for c in fleet.calls if c[0] != "GET"], "nothing changed in Fleet"
@@ -589,6 +753,14 @@ def test_without_a_scep_url_the_authority_must_already_exist(monkeypatch: pytest
     fleet.authorities = []
     with pytest.raises(FleetError, match="RMSCEP"):
         _mdm(fleet, monkeypatch).apply("rmscep", _with_cert())
+    assert not [c for c in fleet.calls if c[0] != "GET"], "no team was made for it"
+
+
+def test_without_a_scep_url_a_template_must_name_its_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+    fleet = _Fleet()
+    with pytest.raises(FleetError, match="names no certificate authority"):
+        _mdm(fleet, monkeypatch).apply("rmscep", _with_cert(""))
+    assert not fleet.calls
 
 
 def test_applying_twice_publishes_one_web_app(monkeypatch: pytest.MonkeyPatch) -> None:

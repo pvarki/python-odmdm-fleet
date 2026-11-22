@@ -58,7 +58,7 @@ def _refused(exc: FleetError, named: Mapping[str, str] | None = None, lines: Seq
 
 
 class FleetPlugin:
-    """FleetDM, one team per Deploy App"""
+    """FleetDM: a team and a certificate authority per Deploy App, any number of them on one Fleet"""
 
     API_VERSION: ClassVar[int] = API_VERSION
     title: ClassVar[str] = "Fleet"
@@ -167,12 +167,18 @@ class FleetPlugin:
         yield Step(f"Applied to team {self.team} ({result['team_id']}): {len(result['assigned'])} apps assigned", True)
 
     def set_challenge(self, window: Settings) -> None:
-        """Give the template's certificate authority the window's challenge, and change nothing else"""
+        """Give this Deploy App's certificate authority the window's challenge, and change nothing else"""
         wanted = self._template(window)
         if not wanted.certificate:
             raise MdmError("The template states no certificate, so there is no authority to give it to")
+        api = self._fleet()
         try:
-            self._fleet().ensure_authority(wanted.certificate.authority, window.scep_url, window.challenge)
+            # The team's phones ask the authority its certificate template is bound to: that one gets the challenge
+            try:
+                bound = api.bound_authority(api.team_id(self.team), wanted.certificate.name)
+            except NoTeam:
+                bound = None
+            api.ensure_authority(window.scep_url, window.challenge, wanted.certificate.authority, bound)
         except FleetError as exc:
             raise _refused(exc) from exc
 

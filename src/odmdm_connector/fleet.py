@@ -9,6 +9,7 @@ import datetime
 import http.client
 import json
 import logging
+import re
 import secrets
 import ssl
 import time
@@ -113,6 +114,22 @@ MAX_WEB_APP_TITLE = 29
 #: Named after the responder this was first applied from, and kept: Fleet knows a profile by its
 #: name, so a new name would sit next to the old profile on every team instead of replacing it.
 POLICY_NAME = "rmscep-policy"
+
+#: What an authority made here is called: this and the Deploy App's own name, so that one Fleet
+#: can serve several Deploy Apps
+AUTHORITY_PREFIX = "ODMDM_"
+#: The one name the shipped template gave every Deploy App's authority before each had its own.
+#: An authority is found by the address it serves, so one of this name is still its Deploy App's.
+LEGACY_AUTHORITY = "RMSCEP"
+
+
+def authority_name(scep_url: str) -> str:
+    """What a Deploy App's authority is called when it is made here: ODMDM_ and the host's first label
+
+    In capitals, with an underscore for anything else: Fleet takes letters, digits and underscores only.
+    """
+    label = (urlparse(scep_url).hostname or "").split(".")[0]
+    return AUTHORITY_PREFIX + re.sub(r"[^A-Z0-9]", "_", label.upper())
 
 
 @dataclasses.dataclass(frozen=True)
@@ -424,54 +441,109 @@ class FleetMdm:
                 return str(package)
         return ""
 
-    def ensure_authority(self, name: str, scep_url: str, challenge: str) -> int:
-        """The SCEP CA this deployment is, created if the MDM does not have it yet
+    def _authorities(self) -> list[dict[str, Any]]:
+        """Every certificate authority Fleet has: its id, name and type, not what it serves"""
+        listed: list[dict[str, Any]] = self._call("GET", "/api/latest/fleet/certificate_authorities").get(
+            "certificate_authorities", []
+        )
+        return listed
+
+    def _authority(self, authority_id: int) -> dict[str, Any]:
+        """One authority in full. The listing does not carry the url, only this does."""
+        return self._call("GET", f"/api/latest/fleet/certificate_authorities/{authority_id}")
+
+    def authority_id(self, name: str) -> int:
+        """An authority that must already be there, by the name a template gives it"""
+        if not name:
+            raise FleetError("the template names no certificate authority, and there is no SCEP address to find one by")
+        authorities = self._authorities()
+        match = [a for a in authorities if a.get("name") == name]
+        if not match:
+            known = ", ".join(sorted(str(a.get("name")) for a in authorities)) or "none"
+            raise FleetError(f"no certificate authority named {name!r}; the MDM has: {known}")
+        return int(match[0]["id"])
+
+    def bound_authority(self, team: int, certificate: str) -> int | None:
+        """The authority the team's certificate template of that name is bound to; None while the team has none"""
+        for template in self._call("GET", f"/api/latest/fleet/certificates?team_id={team}").get("certificates", []):
+            if template.get("name") == certificate:
+                return int(template.get("certificate_authority_id", 0))
+        return None
+
+    def _give_challenge(self, authority_id: int, name: object, scep_url: str, challenge: str) -> None:
+        """Hand an authority that serves scep_url the window's challenge; without one, leave it as it is"""
+        if not challenge:
+            return
+        # The challenge is never logged. No name in the body: Fleet reads a name on a PATCH as
+        # a rename and then refuses it as a conflict with the authority's own existing name,
+        # so sending it turns every update into a 409.
+        LOGGER.info("Giving certificate authority %s at %s the new challenge", name, scep_url)
+        self._call(
+            "PATCH",
+            f"/api/latest/fleet/certificate_authorities/{authority_id}",
+            {"custom_scep_proxy": {"url": scep_url, "challenge": challenge}},
+        )
+
+    def ensure_authority(self, scep_url: str, challenge: str, name: str = "", bound: int | None = None) -> int:
+        """The SCEP CA this Deploy App is, created if the MDM does not have it yet
 
         Pointing the MDM at a SCEP server is MDM configuration, not protocol, so there is no
         standard for it and every MDM words it differently. Fleet happens to expose it, so here
         it is one less thing for an operator to get wrong by hand.
 
-        One authority of a name serves one Deploy App. An existing one with another URL is refused,
-        never repointed: the shipped template names the same authority for every Deploy App, so a
-        second Deploy App on the same Fleet would otherwise send the first one's phones to itself.
-        One with this URL gets the challenge whenever there is one: RASENMAEHER makes a new one for
-        every enrolment window, and Fleet never hands the old one back to compare against.
-        """
-        authorities = self._call("GET", "/api/latest/fleet/certificate_authorities").get("certificate_authorities", [])
-        match = [a for a in authorities if a.get("name") == name]
-        if match:
-            authority_id = int(match[0]["id"])
-            # The listing does not carry the url, only the detail does, so compare against the detail
-            serves = self._call("GET", f"/api/latest/fleet/certificate_authorities/{authority_id}").get("url")
-            if _same_case(serves or "") != _same_case(scep_url):
-                raise FleetError(
-                    f"certificate authority {name} already serves {serves or 'another address'}: connect this "
-                    "Deploy App to a Fleet of its own, give it a template that names another authority, or delete "
-                    "that authority in Fleet if the Deploy App moved"
-                )
-            if not challenge:
-                return authority_id
-            # The challenge is never logged. No name in the body: Fleet reads a name on a PATCH as
-            # a rename and then refuses it as a conflict with the authority's own existing name,
-            # so sending it turns every update into a 409.
-            LOGGER.info("Giving certificate authority %s at %s the new challenge", name, scep_url)
-            self._call(
-                "PATCH",
-                f"/api/latest/fleet/certificate_authorities/{authority_id}",
-                {"custom_scep_proxy": {"url": scep_url, "challenge": challenge}},
-            )
-            return authority_id
+        An authority is known by the address it serves, whatever it is called. So every Deploy App
+        on one Fleet has its own, and one made under the name all of them once shared, or by hand,
+        is still found. It gets the challenge whenever there is one: RASENMAEHER makes a new one
+        for every enrolment window, and Fleet never hands the old one back to compare against.
 
-        LOGGER.info("Creating certificate authority %s -> %s", name, scep_url)
+        Only a new one needs a name: the template's, or else authority_name(). A name that serves
+        another address is refused, never repointed: that would send its phones to this Deploy App.
+
+        bound is the authority the team's certificate template is already bound to: its phones ask
+        that one and no other, so it gets the challenge or nothing does. If it serves another address,
+        by a different host or only by a slash, that is refused before anything is changed: a new
+        authority beside it would take the challenge and leave the team's phones to be refused.
+        """
+        if bound is not None:
+            held = self._authority(bound)
+            serves = str(held.get("url") or "")
+            if _same_case(serves) != _same_case(scep_url):
+                raise FleetError(
+                    f"the team takes its certificates from authority {held.get('name')}, which serves "
+                    f"{serves or 'another address'}, not {scep_url}, so nothing was changed. If that authority is "
+                    "this Deploy App's, correct its address in Fleet; if not, choose another team."
+                )
+            self._give_challenge(bound, held.get("name"), scep_url, challenge)
+            return bound
+        wanted = name or authority_name(scep_url)
+        # Only a custom SCEP proxy has an address to compare. The likely names are asked first.
+        proxies = [a for a in self._authorities() if a.get("type", "custom_scep_proxy") == "custom_scep_proxy"]
+        taken = ""
+        for listed in sorted(proxies, key=lambda a: a.get("name") not in (wanted, LEGACY_AUTHORITY)):
+            authority_id = int(listed["id"])
+            serves = str(self._authority(authority_id).get("url") or "")
+            if _same_case(serves) != _same_case(scep_url):
+                if listed.get("name") == wanted:
+                    taken = serves or "another address"
+                continue
+            self._give_challenge(authority_id, listed.get("name"), scep_url, challenge)
+            return authority_id
+        if taken:
+            raise FleetError(
+                f"certificate authority {wanted} already serves {taken}: give this Deploy App a template that "
+                "names another authority, or delete that authority in Fleet if the Deploy App moved"
+            )
+
+        LOGGER.info("Creating certificate authority %s -> %s", wanted, scep_url)
         created = self._call(
             "POST",
             "/api/latest/fleet/certificate_authorities",
-            {"custom_scep_proxy": {"name": name, "url": scep_url, "challenge": challenge}},
+            {"custom_scep_proxy": {"name": wanted, "url": scep_url, "challenge": challenge}},
         )
         body = created.get("certificate_authority") or created
         return int(body["id"])
 
-    def ensure_certificate(self, team: int, name: str, subject: str, authority: str) -> int:
+    def ensure_certificate(self, team: int, name: str, subject: str, authority: int) -> int:
         """The template the MDM fills in per device, and asks us to sign
 
         There is no update in place, so a changed subject is delete then create. The name is kept
@@ -481,29 +553,33 @@ class FleetMdm:
         Refused while the team has devices. Replacing the template makes each of them delete the
         certificate it has and ask again, and the deployment refuses a name that is already taken,
         so all of them would lose access (measured on Fleet 4.90).
-        """
-        authorities = self._call("GET", "/api/latest/fleet/certificate_authorities").get("certificate_authorities", [])
-        match = [a for a in authorities if a.get("name") == authority]
-        if not match:
-            known = ", ".join(sorted(str(a.get("name")) for a in authorities)) or "none"
-            raise FleetError(f"no certificate authority named {authority!r}; the MDM has: {known}")
-        authority_id = int(match[0]["id"])
 
+        Refused, devices or none, when the team's template is bound to another authority: a team
+        takes its certificates from one Deploy App, and replacing the template would enrol that
+        Deploy App's phones into this one. Fleet keeps an authority while a template is bound to it.
+        apply() finds that out before it changes anything, through ensure_authority's bound; this
+        is the same refusal for a caller that names an authority instead.
+        """
         existing = self._call("GET", f"/api/latest/fleet/certificates?team_id={team}").get("certificates", [])
         for template in existing:
             if template.get("name") != name:
                 continue
-            if (
-                template.get("subject_name") == subject
-                and int(template.get("certificate_authority_id", 0)) == authority_id
-            ):
+            bound = int(template.get("certificate_authority_id", 0))
+            if bound != authority:
+                other = self._authority(bound)
+                raise FleetError(
+                    f"team {team} takes its certificates from authority {other.get('name')}, which serves "
+                    f"{other.get('url') or 'another address'}: a team belongs to one Deploy App. Choose another "
+                    "team for this Deploy App."
+                )
+            if template.get("subject_name") == subject:
                 return int(template["id"])
             devices = len(self._hosts(team))
             if devices:
                 raise FleetError(
                     f"replacing certificate template {name} would delete the certificate of {devices} devices in "
-                    f"team {team}, and their names would be refused when they ask again, so nothing was changed. "
-                    "Use a new team, or empty this one first."
+                    f"team {team}, and their names would be refused when they ask again, so the template was left "
+                    "as it is. Use a new team, or empty this one first."
                 )
             self._call("DELETE", f"/api/latest/fleet/certificates/{template['id']}?team_id={team}")
             LOGGER.info("Replacing certificate template %s", name)
@@ -511,7 +587,7 @@ class FleetMdm:
         created = self._call(
             "POST",
             "/api/latest/fleet/certificates",
-            {"name": name, "team_id": team, "certificate_authority_id": authority_id, "subject_name": subject},
+            {"name": name, "team_id": team, "certificate_authority_id": authority, "subject_name": subject},
         )
         LOGGER.info("Certificate template %s asks for %s", name, subject)
         return int(created["id"])
@@ -605,26 +681,31 @@ class FleetMdm:
         certificate visible to anything at all. Both have to be true before a device joins,
         because that is the only moment apps install.
 
-        Given scep_url, the certificate authority is created too, so a fresh deployment needs
-        nothing typed into Fleet by hand. Without it the authority must already be there, which
-        is the case for an MDM we cannot create one in.
+        Given scep_url, the certificate authority is found by it, or created, so a fresh deployment
+        needs nothing typed into Fleet by hand. Without it the template must name an authority that
+        is already there, which is the case for an MDM we cannot create one in.
 
         Without create_team, a team Fleet lacks is NoTeam before anything is changed.
         """
         # Without create_team the team is looked up first, so a team missing leaves Fleet as it was
         team = None if create_team else self.team_id(team_name)
-        # The authority before a team is made: refusing it must leave Fleet as it was, a new team included
+        # The authority before a team is made: refusing it must leave Fleet as it was, a new team included.
+        # A team that is there may have its template bound to an authority already: that one is the team's.
+        authority = 0
         if template.certificate and scep_url:
-            self.ensure_authority(template.certificate.authority, scep_url, challenge)
+            if team is None:
+                try:
+                    team = self.team_id(team_name)
+                except NoTeam:
+                    team = None
+            bound = self.bound_authority(team, template.certificate.name) if team is not None else None
+            authority = self.ensure_authority(scep_url, challenge, template.certificate.authority, bound)
+        elif template.certificate:
+            authority = self.authority_id(template.certificate.authority)
         if team is None:
             team = self.team_id(team_name, create=True)
         if template.certificate:
-            self.ensure_certificate(
-                team,
-                template.certificate.name,
-                template.certificate.subject,
-                template.certificate.authority,
-            )
+            self.ensure_certificate(team, template.certificate.name, template.certificate.subject, authority)
         self.ensure_policy(team, template.policy, force=force_policy)
 
         packages = [app.package for app in template.apps]

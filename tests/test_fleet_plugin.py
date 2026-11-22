@@ -201,6 +201,48 @@ def test_the_team_is_named_after_the_deployment_by_default() -> None:
     assert team.default_for("golden-monkey.example.fi") == "golden-monkey DeployApp"
 
 
+def test_a_new_window_reaches_only_this_deploy_apps_authority(fleet: _Fleet) -> None:
+    """On a Fleet that serves several Deploy Apps, each with a challenge of its own
+
+    The names say nothing: the team's template is bound to authority 3, which serves this Deploy App.
+    """
+    fleet.authorities = [
+        {"id": 4, "name": "UNIT_B", "url": "https://north.example.fi/scep", "challenge": "norths"},
+        {"id": 3, "name": "UNIT_A", "url": "https://example.fi/scep", "challenge": "old"},
+    ]
+
+    _plugin().set_challenge(WINDOW)
+
+    assert [authority["challenge"] for authority in fleet.authorities] == ["norths", "new-window"]
+    assert [call for call in fleet.calls if call[0] != "GET"] == [
+        ("PATCH", "/api/latest/fleet/certificate_authorities/3")
+    ]
+
+
+def test_a_new_window_is_refused_when_the_team_asks_another_address(fleet: _Fleet) -> None:
+    """A Deploy App that moved, or the wrong team: said aloud, and the challenge goes nowhere"""
+    fleet.authorities = [{"id": 3, "name": "RMSCEP", "url": "https://old.example.fi/scep", "challenge": "old"}]
+
+    with pytest.raises(MdmError) as raised:
+        _plugin().set_challenge(WINDOW)
+
+    assert str(raised.value) == (
+        "Fleet refused: the team takes its certificates from authority RMSCEP, which serves "
+        "https://old.example.fi/scep, not https://example.fi/scep, so nothing was changed. If that authority is this "
+        "Deploy App's, correct its address in Fleet; if not, choose another team."
+    )
+    assert fleet.authorities == [{"id": 3, "name": "RMSCEP", "url": "https://old.example.fi/scep", "challenge": "old"}]
+    assert not [call for call in fleet.calls if call[0] != "GET"]
+
+
+def test_a_new_window_before_the_team_is_made_finds_the_authority_by_its_address(fleet: _Fleet) -> None:
+    fleet.authorities = [{"id": 3, "name": "RMSCEP", "url": "https://example.fi/scep", "challenge": "old"}]
+
+    _plugin(team="golden-monkey DeployApp").set_challenge(WINDOW)
+
+    assert fleet.authorities[0]["challenge"] == "new-window"
+
+
 def test_sending_the_policy_again_makes_no_team(fleet: _Fleet) -> None:
     """A repair creates nothing: a team Fleet lacks is refused before the authority or anything else is changed"""
     fleet.authorities = [{"id": 3, "name": "RMSCEP", "url": "https://example.fi/scep", "challenge": "old"}]
