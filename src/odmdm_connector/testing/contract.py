@@ -19,7 +19,19 @@ import re
 from collections.abc import Callable
 from typing import Protocol
 
-from ..mdm import API_VERSION, ASK_AGAIN, CAPABILITIES, SET_CHALLENGE, SETUP, Mdm, MdmError, Phone, State, Step
+from ..mdm import (
+    API_VERSION,
+    ASK_AGAIN,
+    CAPABILITIES,
+    SEND_POLICY,
+    SET_CHALLENGE,
+    SETUP,
+    Mdm,
+    MdmError,
+    Phone,
+    State,
+    Step,
+)
 from ..settings import Settings
 
 #: An enrolment window to hand the MDM; the challenge is not a real one
@@ -157,6 +169,14 @@ def sets_up(factory: Factory) -> None:
         _require(steps and all(isinstance(step, Step) for step in steps), "setup must report Steps")
 
 
+def sends_the_policy_again(factory: Factory) -> None:
+    mdm = factory()
+    if SETUP in mdm.missing or _lacking(mdm, SEND_POLICY, lambda: list(mdm.setup(WINDOW, force=True, dry_run=True))):
+        return
+    steps = list(mdm.setup(WINDOW, force=True, dry_run=True))
+    _require(steps and all(isinstance(step, Step) for step in steps), "setup with force must report Steps")
+
+
 CHECKS: tuple[Check, ...] = (
     declares_the_contract_version,
     declares_its_fields,
@@ -168,4 +188,5 @@ CHECKS: tuple[Check, ...] = (
     asks_again,
     sets_the_challenge,
     sets_up,
+    sends_the_policy_again,
 )

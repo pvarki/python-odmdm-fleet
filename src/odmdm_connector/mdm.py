@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import ClassVar, Protocol
 
-from .settings import Settings
+from .settings import HOST, Settings
 
 API_VERSION = 1
 
@@ -22,7 +22,11 @@ API_VERSION = 1
 SETUP = "setup"
 SET_CHALLENGE = "set_challenge"
 ASK_AGAIN = "ask_again"
-CAPABILITIES = (SETUP, SET_CHALLENGE, ASK_AGAIN)
+#: setup with force: the policy sent to the phones again even if unchanged
+SEND_POLICY = "send_policy"
+CAPABILITIES = (SETUP, SET_CHALLENGE, ASK_AGAIN, SEND_POLICY)
+#: In a Field's default, the deployment's name: the first label of its Deploy App's host
+DEPLOYMENT = "{deployment}"
 
 
 class State(Enum):
@@ -61,7 +65,8 @@ class Field:
 
     A secret is never taken from an option or a plain environment variable, only from a file.
     A required one must be given: the window does not connect without it, and the command line
-    says how to give it.
+    says how to give it. DEPLOYMENT in the default stands for the deployment's name, so that
+    "{deployment} DeployApp" is "golden-monkey DeployApp" for golden-monkey.example.fi.
     """
 
     key: str
@@ -72,6 +77,20 @@ class Field:
     required: bool = False
     #: Rarely changed: the window shows it only when asked
     advanced: bool = False
+
+    def default_for(self, host: str) -> str:
+        """The default for the Deploy App on this host; none when it names the deployment and the host is not one
+
+        The host is trimmed and taken in lower case, so the page and the command line give the same
+        default for the same Deploy App; anything but a plain DNS name, such as an address with its
+        scheme, gives none.
+        """
+        if DEPLOYMENT not in self.default:
+            return self.default
+        host = host.strip().lower()
+        if not HOST.fullmatch(host):
+            return ""
+        return self.default.replace(DEPLOYMENT, host.split(".")[0])
 
 
 @dataclass(frozen=True)
@@ -124,7 +143,9 @@ class Mdm(Protocol):
         """Set the MDM up for this Deploy App, first time or again
 
         Idempotent. Never replaces a certificate template on a group that has phones. dry_run
-        checks what would be stated and stops before the MDM is changed.
+        checks what would be stated and stops before the MDM is changed. force sends the policy to
+        the phones again even if unchanged, for a phone whose policy the MDM overwrote; the phones
+        keep their certificates and apps. An MDM that cannot lists SEND_POLICY in missing.
         """
 
     def set_challenge(self, window: Settings) -> None:
@@ -152,6 +173,8 @@ __all__ = [
     "API_VERSION",
     "ASK_AGAIN",
     "CAPABILITIES",
+    "DEPLOYMENT",
+    "SEND_POLICY",
     "SETUP",
     "SET_CHALLENGE",
     "Field",

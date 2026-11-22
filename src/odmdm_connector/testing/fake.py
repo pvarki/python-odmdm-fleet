@@ -4,7 +4,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
 from typing import ClassVar
 
-from ..mdm import API_VERSION, ASK_AGAIN, SET_CHALLENGE, SETUP, Field, MdmError, Phone, State, Step
+from ..mdm import API_VERSION, ASK_AGAIN, SEND_POLICY, SET_CHALLENGE, SETUP, Field, MdmError, Phone, State, Step
 from ..settings import Settings
 
 #: The group's phones when a test gives none: two waiting for a name, one with its certificate
@@ -72,6 +72,8 @@ class FakeMdm:
 
     def setup(self, window: Settings, force: bool = False, dry_run: bool = False) -> Iterator[Step]:
         self._able(SETUP)
+        if force:
+            self._able(SEND_POLICY)
         yield Step(f"Group {self.values.get('group', 'Deploy App')} enrols at {window.scep_url}", True)
         if dry_run:
             return

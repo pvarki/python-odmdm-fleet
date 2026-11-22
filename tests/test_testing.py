@@ -1,12 +1,13 @@
 """The plugin authors' test kit, run against the fake and against Fleet over the stub"""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import ClassVar
 
 import pytest
 
 from odmdm_connector.fleet_plugin import FleetPlugin
-from odmdm_connector.mdm import CAPABILITIES, Mdm, MdmError, Phone, State
+from odmdm_connector.mdm import CAPABILITIES, Mdm, MdmError, Phone, State, Step
+from odmdm_connector.settings import Settings
 from odmdm_connector.testing import FakeMdm, contract
 
 from .test_fleet import Request, Response, _Fleet, _host, _mdm
@@ -85,6 +86,15 @@ class _Careless(FakeMdm):
         return [""]
 
 
+class _Forcing(FakeMdm):
+    """Says it cannot send the policy again, then sets up with force anyway"""
+
+    missing: ClassVar[Mapping[str, str]] = {"send_policy": "Not here"}
+
+    def setup(self, window: Settings, force: bool = False, dry_run: bool = False) -> Iterator[Step]:
+        return super().setup(window, dry_run=dry_run)
+
+
 class _Lying(FakeMdm):
     """Says it lacks asking again, then does it anyway"""
 
@@ -106,6 +116,7 @@ class _Lying(FakeMdm):
         (_Careless, contract.asks_again, "lines must be non-empty"),
         (_Lying, contract.asks_again, "listed as missing but did not raise"),
         (_Lying, contract.sets_the_challenge, "must raise MdmError with its sentence"),
+        (_Forcing, contract.sends_the_policy_again, "send_policy is listed as missing but did not raise"),
     ],
 )
 def test_a_plugin_breaking_the_contract_fails_its_check(
