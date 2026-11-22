@@ -169,6 +169,12 @@ Names already in use on live Fleets are identities, not cosmetics: the policy pr
 certificate template name (the Android keystore alias). Changing either duplicates the profile or
 strands every enrolled phone's key.
 
+A certificate authority is the exception: it is known by the address it serves, never by its name
+(`FleetMdm.ensure_authority`), so one Fleet serves several Deploy Apps and an authority named
+`RMSCEP` or typed by hand keeps working. Never look one up by a fixed name, and never repoint one:
+its teams' phones would enrol into another Deploy App. Fleet keeps an authority while a certificate
+template is bound to it (a foreign key without ON DELETE in Fleet 4.90.1's schema).
+
 ## Commands
 
 - Setup: `uv sync`

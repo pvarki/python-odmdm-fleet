@@ -68,9 +68,12 @@ settings, whether its token is kept on this computer, and where the log is, and 
 policy again** for a phone whose browser refuses its certificate (see `The order that works`_): it
 ticks off its steps as **Connect** does, and the phones keep their certificates and apps. The Deploy App's name
 at the top right lists the Deploy Apps added, opens another, adds one or removes the one open.
-Each Deploy App needs a Fleet of its own: the shipped template names one certificate
-authority for every Deploy App, and the connector refuses to point an authority that serves one
-Deploy App at another.
+One Fleet can serve several Deploy Apps. Each has a certificate authority of its own in Fleet and
+a team of its own; the connector never points an authority that serves one Deploy App at another,
+and refuses a team whose certificate template takes its certificates from another address (see
+`The template`_). A challenge goes only to the authority the team's template is bound to.
+The API token is a global admin's, so whoever runs the connector for one Deploy App can change
+every team in that Fleet: share a Fleet only among people who trust each other with it.
 
 For every batch: open enrolment in Deploy App and press **Open in the MDM connector** again, or
 **New settings** and paste the line, so the MDM gets the new challenge. Let the phones enrol, then
@@ -355,6 +358,16 @@ in a template of its own.
 
 A name the phone supplies, such as its serial number, would make a leaked enrolment link enough
 for an identity.
+
+The shipped template names no certificate authority. The connector finds a Deploy App's authority
+in Fleet by the address it serves, whatever it is called, and makes one when there is none:
+``ODMDM_`` and the first part of the Deploy App's host name, in capitals, as
+``ODMDM_GOLDEN_MONKEY`` for ``golden-monkey.example.fi``. Two Deploy Apps whose host names begin
+alike would get the same name; the second is refused until its template names another:
+``"authority": "NAME"`` beside the certificate's ``name`` and ``subject``, in letters, digits and
+underscores. An authority made earlier as ``RMSCEP``, or by hand, is found by its address and kept:
+the address has to be the Deploy App's exactly, ``https://<host>/scep`` with no slash after it. One
+that differs is refused once a team's certificate template is bound to it, with both addresses said.
 
 The tool also refuses a policy that lets an app use the key without being named in
 ``packageNames``, lets the user pick a key for any app (``privateKeySelectionEnabled``), or
