@@ -44,9 +44,12 @@
       "number, would make a leaked enrolment link enough for an identity. Fleet's id for the phone",
       "follows it as OU, so the deployment can tell later which device a callsign was issued to;",
       "leave the OU out only for a team that already has phones under a subject without it.",
-      "The name becomes the Android keystore alias, so it is per deployment."
+      "The name becomes the Android keystore alias, so it is per deployment.",
+      "No certificate authority is named: the connector finds this Deploy App's in the MDM by the",
+      "address it serves, and makes one when there is none, called ODMDM_ and the first part of the",
+      "Deploy App's host name.",
+      "So one MDM can serve several Deploy Apps. \"authority\": \"NAME\" here gives a new one that name."
     ],
-    "authority": "RMSCEP",
     "name": "{key_alias}",
     "subject": "CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART, OU=$FLEET_VAR_HOST_UUID"
   },

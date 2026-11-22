@@ -181,6 +181,19 @@ def test_the_example_is_a_template_we_accept() -> None:
     assert [r["packageNames"] for r in rules] == [["com.android.chrome", "com.atakmap.app.civ", "im.vector.app"]]
 
 
+def test_the_shipped_template_names_no_authority() -> None:
+    """The connector finds a Deploy App's authority by its address, so one MDM can serve several"""
+    template = load(EXAMPLE, domain="example.fi", key_alias="rmscep")
+
+    assert template.certificate is not None and template.certificate.authority == ""
+
+
+def test_a_template_may_name_its_authority(tmp_path: Path) -> None:
+    template = load(_write(tmp_path, _with()), domain="example.fi", key_alias="rmscep")
+
+    assert template.certificate is not None and template.certificate.authority == "RMSCEP"
+
+
 def test_the_shipped_subject_carries_the_device_id() -> None:
     """A subject cannot change once a team has phones, so the id is there from the first template"""
     template = load(EXAMPLE, domain="example.fi", key_alias="rmscep")

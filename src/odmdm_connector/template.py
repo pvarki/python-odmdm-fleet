@@ -91,7 +91,9 @@ class Certificate:
 
     name: str
     subject: str
-    authority: str
+    #: The MDM's certificate authority by name. Without one the MDM plugin finds the Deploy App's
+    #: own by the address it serves, and makes it when there is none.
+    authority: str = ""
 
 
 @dataclass(frozen=True)
@@ -190,11 +192,11 @@ def load(path: Traversable, domain: str, key_alias: str) -> MdmTemplate:
     certificate = None
     if raw.get("certificate"):
         entry = raw["certificate"]
-        missing = [key for key in ("name", "subject", "authority") if not entry.get(key)]
+        missing = [key for key in ("name", "subject") if not entry.get(key)]
         if not isinstance(entry, dict) or missing:
-            raise TemplateError(f"certificate needs name, subject and authority; missing {missing}")
+            raise TemplateError(f"certificate needs name and subject; missing {missing}")
         certificate = Certificate(
-            name=str(entry["name"]), subject=str(entry["subject"]), authority=str(entry["authority"])
+            name=str(entry["name"]), subject=str(entry["subject"]), authority=str(entry.get("authority") or "")
         )
 
     unsafe = _unsafe(policy, raw.get("certificate") or None)
