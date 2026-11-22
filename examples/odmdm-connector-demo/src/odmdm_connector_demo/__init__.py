@@ -23,7 +23,8 @@ class DemoMdm:
     API_VERSION: ClassVar[int] = 1
     title: ClassVar[str] = "Demo MDM"
     fields: ClassVar[tuple[Field, ...]] = (
-        Field("group", "Group", default="Deploy App", help="The group phones enrol into"),
+        # Named after the deployment: the connector fills {deployment} in, golden-monkey for golden-monkey.example.fi
+        Field("group", "Group", default="{deployment} DeployApp", help="The group phones enrol into"),
     )
     missing: ClassVar[Mapping[str, str]] = {
         SET_CHALLENGE: (
@@ -33,7 +34,7 @@ class DemoMdm:
 
     def __init__(self, values: Mapping[str, str], refuse_after: int | None = None) -> None:
         """refuse_after: for tests, the pretend MDM refuses to name more phones than that"""
-        self.group = values.get("group") or "Deploy App"
+        self.group = values.get("group", "")
         self.refuse_after = refuse_after
         self.found = [
             Phone("d1", "", "Pretend Phone 7", "2026-11-01T09:00:00+00:00", State.NEEDS_NAME),
