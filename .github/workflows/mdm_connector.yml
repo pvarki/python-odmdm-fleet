@@ -1,0 +1,152 @@
+# The mdm-connector folder Deploy App's UI serves, built once for every caller: the self-contained
+# file per system and the one file for Python, each started, and connector.json, as the artifact
+# mdm-connector. pull_request.yml calls it on the change, push_to_main.yml on the commit it has just tagged.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit, branch or tag to build; empty builds the commit that triggered the caller"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  # The connector as one self-contained file per system, which Deploy App's MDM page offers for
+  # download. PyInstaller is a build tool only; the file is packed as connector.json names it. Not signed.
+  # Every leg builds with uv's own Python (python-build-standalone), not the runner's. On Linux the
+  # file needs the glibc it was built on or newer, so that leg builds in AlmaLinux 8 (glibc 2.28).
+  # macos-15-intel: a browser cannot tell an Intel Mac from an Apple Silicon one, so both get a file.
+  one-file:
+    name: Self-contained file (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest, macos-15-intel]
+    env:
+      UV_PYTHON_PREFERENCE: only-managed
+      UV_PYTHON: "3.12"
+      ALMALINUX_8: almalinux:8@sha256:768bedc30fe0a536adb0a65d2eddb7caad364e514fbddd0ae9e026975f590342
+      DEBIAN_11: debian:11@sha256:6f519a81440354a85eb592c5f32109ab80605f6b892455983a6f618bf87fabe9
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: pvarki/config-ci-library/.github/actions/setup-python@fffb737257f6a08b0bbd03aa8f9e090cc610e7b6 # v0.15.0+261104
+        with:
+          python-version: "3.12"
+      - name: Build and pack it, as README.rst says
+        if: runner.os != 'Linux'
+        run: uv run --locked --group dist python packaging/build.py
+      # The same command in AlmaLinux 8 with this runner's uv; the checkout is read-only in it, and copied
+      - name: Build and pack it on Linux, in AlmaLinux 8
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist/mdm-connector
+          docker run --rm -e UV_PYTHON_PREFERENCE -e UV_PYTHON -v "$PWD:/src:ro" -v "$PWD/dist/mdm-connector:/out" \
+            -v "$(command -v uv):/usr/local/bin/uv:ro" "$ALMALINUX_8" sh -euc '
+              cp -r /src /work && cd /work && rm -rf .venv build dist
+              uv run --locked --group dist python packaging/build.py /out'
+      - run: echo "VERSION=$(uv version --short)" >> "$GITHUB_ENV"
+      # As an operator gets it: unpacked, started with nothing but its own files, writing only into a scratch home
+      - name: Unpack it and prove it runs, finds Fleet and serves the page
+        env:
+          HOME: ${{ runner.temp }}/home
+          LOCALAPPDATA: ${{ runner.temp }}/home
+          XDG_CONFIG_HOME: ${{ runner.temp }}/home
+        run: |
+          mkdir -p "$HOME" "$RUNNER_TEMP/unpacked"
+          for packed in dist/mdm-connector/*; do
+            case "$packed" in
+              *.zip) unzip -q "$packed" -d "$RUNNER_TEMP/unpacked" ;;
+              *.tar.gz) tar -xzf "$packed" -C "$RUNNER_TEMP/unpacked" ;;
+              *.exe) cp "$packed" "$RUNNER_TEMP/unpacked/odmdm-connector.exe" ;;
+            esac
+          done
+          cd "$RUNNER_TEMP/unpacked"
+          connector=./odmdm-connector
+          [ -f "$connector" ] || connector=./odmdm-connector.exe
+          test -x "$connector"
+          "$connector" --version | tr -d '\r' | tee version.txt
+          grep -Fqx "odmdm-connector, version $VERSION" version.txt
+          "$connector" mdms | tr -d '\r' | tr -s ' ' | tee mdms.txt
+          grep -Eqx 'fleet odmdm-connector [^ ]+ built in' mdms.txt
+          # Fleet loads, and asks for its address
+          if "$connector" phones 2> phones.txt; then exit 1; fi
+          cat phones.txt
+          grep -Fq 'Fleet address is missing' phones.txt
+          port=$(python -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+          "$connector" web --no-browser --port "$port" > web.txt 2>&1 &
+          pid=$!
+          for _ in $(seq 100); do grep -q 'Press Ctrl+C' web.txt && break; sleep 0.2; done
+          cat web.txt
+          curl -fsS --max-time 10 "http://127.0.0.1:$port/" -o page.html
+          grep -Fq '<!doctype html>' page.html
+          curl -fsS --max-time 10 "http://127.0.0.1:$port/app.js" -o app.js
+          test -s app.js
+          kill "$pid"
+          wait "$pid" || true
+      # The floor, proven by starting it there. The keychain loads cryptography, which --version and
+      # mdms never do: with a Secret Service on a session bus the page must find the keychain usable.
+      - name: Start it on glibc 2.28 (AlmaLinux 8, keychain included) and 2.31 (Debian 11)
+        if: runner.os == 'Linux'
+        run: |
+          for image in "$ALMALINUX_8" "$DEBIAN_11"; do
+            docker run --rm -e HOME=/tmp -v "$RUNNER_TEMP/unpacked:/c:ro" "$image" sh -euc '
+              ldd --version | sed -n 1p
+              /c/odmdm-connector --version
+              /c/odmdm-connector mdms | grep "built in"'
+          done
+          docker run --rm --cap-add IPC_LOCK -e HOME=/tmp -v "$RUNNER_TEMP/unpacked:/c:ro" "$ALMALINUX_8" sh -euc '
+            dnf -q -y install gnome-keyring dbus-daemon > /dev/null
+            dbus-run-session -- sh -euc "
+              printf x | gnome-keyring-daemon --unlock --components=secrets > /dev/null
+              /c/odmdm-connector web --no-browser --port 8080 > /tmp/web.txt 2>&1 &
+              for _ in \$(seq 100); do grep -q Ctrl+C /tmp/web.txt && break; sleep 0.2; done
+              kill \$!"
+            cat /tmp/web.txt
+            grep -q Ctrl+C /tmp/web.txt
+            if grep -q keychain /tmp/web.txt; then exit 1; fi'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: connector-${{ runner.os }}-${{ runner.arch }}
+          path: dist/mdm-connector/
+          if-no-files-found: error
+
+  # What a deployment serves beside its UI as mdm-connector/: the four files, the one file for
+  # Python (README.rst, "Into a network without internet") and connector.json, as ONE artifact
+  mdm-connector:
+    name: The mdm-connector folder
+    needs: one-file
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: pvarki/config-ci-library/.github/actions/setup-python@fffb737257f6a08b0bbd03aa8f9e090cc610e7b6 # v0.15.0+261104
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: connector-*
+          merge-multiple: true
+          path: dist/mdm-connector
+      - name: Add the one file for Python, without the demo plugin, and write connector.json
+        run: |
+          uv build --wheel --out-dir dist
+          uv pip install --target build/pyz --no-deps dist/odmdm_connector-*.whl
+          python -m zipapp build/pyz -m "odmdm_connector.console:odmdm_connector_cli" -p "/usr/bin/env python3" -o "dist/mdm-connector/odmdm-connector-$(uv version --short).pyz"
+          uv run --locked python packaging/manifest.py dist/mdm-connector
+          cat dist/mdm-connector/connector.json
+          jq -e '(.files | length) == 5 and .mdms == [{"name": "fleet", "title": "Fleet"}]' dist/mdm-connector/connector.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mdm-connector
+          path: dist/mdm-connector/
+          if-no-files-found: error
