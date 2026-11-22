@@ -139,7 +139,8 @@ file's system, size and SHA-256; Deploy App's page reads it.
 The files are NOT SIGNED yet, so the system warns at the first start. On macOS it refuses to open
 the file: open **System Settings**, **Privacy & Security**, and press **Open Anyway** for
 ``odmdm-connector``. On Windows, SmartScreen says it protected the PC: press **More info**, then
-**Run anyway**. Compare the file's SHA-256 with ``connector.json`` before doing either.
+**Run anyway**. Before doing either, compare the file's SHA-256 with its line in the release's
+``SHA256SUMS`` (below).
 
 Build the file for the computer you are on from a checkout, with PyInstaller, a build tool kept in
 a dependency group of its own. ``packaging/build.py`` holds the build and is what CI runs::
@@ -152,6 +153,27 @@ manifest into that folder with ``uv run python packaging/manifest.py dist/mdm-co
 artifact ``mdm-connector`` is the folder a deployment serves. The Linux file needs glibc 2.28 or
 newer: CI builds it in AlmaLinux 8 (glibc 2.28) and starts it there, the keychain included, and in
 Debian 11.
+
+Each release carries that folder, built from the release's tag, as one archive that unpacks to
+``mdm-connector/``, the archive's SHA-256 beside it, and ``SHA256SUMS``, one line per file of the
+folder (``connector.json`` aside), all in the form ``sha256sum -c`` reads::
+
+    https://github.com/pvarki/python-odmdm-fleet/releases/download/v<version>/mdm-connector.tar.gz
+    https://github.com/pvarki/python-odmdm-fleet/releases/download/v<version>/mdm-connector.tar.gz.sha256
+    https://github.com/pvarki/python-odmdm-fleet/releases/download/v<version>/SHA256SUMS
+
+The ``+`` in the version is written ``%2B`` in the address, as GitHub writes it: the tag of
+1.3.0+261122 is ``v1.3.0%2B261122`` there. Check an archive before unpacking it::
+
+    sha256sum -c mdm-connector.tar.gz.sha256
+    tar -xzf mdm-connector.tar.gz
+
+Deploy App's UI image fetches the archive of one release, pins its SHA-256 and serves the folder
+beside the app: an image refuses to build from an archive with any other SHA-256. A release's
+assets are never replaced, so the SHA-256 the MDM page shows for a file is the line for that file in
+the release's ``SHA256SUMS``. Check a downloaded file in its folder before the first start::
+
+    sha256sum -c --ignore-missing SHA256SUMS
 
 Into a network without internet
 -------------------------------
