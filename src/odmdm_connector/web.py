@@ -105,7 +105,7 @@ class Page(ThreadingHTTPServer):
         self.lock = threading.Lock()
         self.hosts = {f"127.0.0.1:{self.port}", f"localhost:{self.port}"}
         self.origins = {f"http://{host}" for host in self.hosts}
-        #: The steps of the last setup, as its result brought them, and its error, empty when it passed
+        #: The steps of the last setup or sending of the policy, as its result brought them, and its error
         self.steps: list[dict[str, Any]] = []
         self.setup_error = ""
         #: When the phones were last asked for, by clock; None before the first time
@@ -131,7 +131,7 @@ class Page(ThreadingHTTPServer):
 
     def _take(self, results: list[Result], now: datetime.datetime) -> None:
         for result in results:
-            if result.job is Job.SETUP:
+            if result.job in (Job.SETUP, Job.POLICY):
                 self.steps, self.setup_error = [asdict(step) for step in result.steps], result.error
             elif result.job is Job.PHONES and result.phones is not None:
                 self.updated = (result.host, now.strftime("%H:%M"))
@@ -174,6 +174,8 @@ class Page(ThreadingHTTPServer):
                 {"name": each.name, "package": each.package, "version": each.version, "built_in": each.built_in}
                 for each in app.mdms()
             ],
+            # What sending the policy again does, empty when the MDM cannot
+            "policy": app.policy_note(),
             # While a setup runs, the steps it has done so far; after it, the steps its result brought
             "steps": self.steps or [asdict(step) for step in app.progress],
             "setup_error": self.setup_error,
@@ -254,6 +256,12 @@ class Page(ThreadingHTTPServer):
         self._list()
         return {}
 
+    def policy(self, body: Body) -> Body:
+        """Send the policy again, its steps shown as a setup's"""
+        said = self.app.send_policy()
+        self.steps, self.setup_error = [], ""
+        return {"said": said}
+
     def preview(self, body: Body) -> Body:
         """What naming the phones chosen would do, and the first number a numbered batch starts from"""
         app = self.app
@@ -304,6 +312,7 @@ ACTIONS: Mapping[str, Callable[[Page, Body], Body]] = {
     "/api/approve": Page.approve,
     "/api/connect": Page.connect,
     "/api/refresh": Page.refresh,
+    "/api/policy": Page.policy,
     "/api/preview": Page.preview,
     "/api/name": Page.name,
     "/api/again": Page.again,

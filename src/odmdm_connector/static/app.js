@@ -307,7 +307,7 @@ function begin() {
 // Where a Deploy App's work goes on: its phones, else what its MDM still needs, and why. The last
 // answer's sentence stays, for a card to say.
 function home() {
-  flow.renew = flow.change = flow.again = false;
+  flow.renew = flow.change = flow.again = flow.policy = false;
   flow.back = null;
   if (!S.active) show(S.connections.length ? "choose" : "add");
   else if (S.connected) show("app");
@@ -367,9 +367,10 @@ function chooseMdm(name, why = "", only = false) {
 }
 
 // After Connect: the setup's steps while it runs or leaves something to say, else the phones. With
-// the token typed again, a setup that ends with nothing to say goes straight on to the phones.
+// the token typed again, a setup that ends with nothing to say goes straight on to the phones. After
+// Send the policy again (flow.policy), the same card shows that job's steps and stays to say how it ended.
 function checklist() {
-  const busy = S.busy.includes("setup");
+  const busy = S.busy.includes(flow.policy ? "policy" : "setup");
   const said = S.setup_error || S.challenge || S.steps.some((step) => !step.done) || (S.steps.length && !flow.again);
   if (!busy && (!S.connected || !said)) home();
   else if (screen === "connecting") draw(false);
@@ -560,6 +561,7 @@ const CARDS = {
         () => {
           flow.values = {};
           flow.again = flow.only;
+          flow.policy = false;
           checklist();
         },
         // A kept secret left empty after the settings changed is asked for again on its own card
@@ -621,15 +623,31 @@ const CARDS = {
 
   connecting() {
     const title = flow.form.title;
-    const busy = S.busy.includes("setup");
+    const policy = flow.policy;
+    const busy = S.busy.includes(policy ? "policy" : "setup");
     const done = S.steps.filter((step) => step.done);
     const todo = S.steps.filter((step) => !step.done);
     const item = (cls, step) => el("li", { class: cls }, step.label, step.message ? el("span", {}, step.message) : null);
     // Steps left to the operator are what the card is about once the setup has run
-    const hand = !busy && !S.setup_error && (todo.length || S.challenge);
-    const heading = busy ? `Connecting ${title}` : S.setup_error ? `${title} is not set up` : hand ? "Do these by hand" : `${title} is connected`;
+    const given = S.challenge && !policy;
+    const hand = !busy && !S.setup_error && (todo.length || given);
+    const heading = policy
+      ? busy
+        ? "Sending the policy again"
+        : S.setup_error
+          ? "The policy was not sent"
+          : hand
+            ? "Do these by hand"
+            : "The policy is sent again"
+      : busy
+        ? `Connecting ${title}`
+        : S.setup_error
+          ? `${title} is not set up`
+          : hand
+            ? "Do these by hand"
+            : `${title} is connected`;
     return {
-      step: flow.again ? null : 2,
+      step: flow.again || policy ? null : 2,
       host: true,
       parts: [
         h1(heading),
@@ -641,7 +659,7 @@ const CARDS = {
               "ul",
               { class: "run" },
               todo.map((step) => item("hand", step)),
-              S.challenge ? el("li", { class: "hand" }, S.challenge_note, challenge()) : null,
+              given ? el("li", { class: "hand" }, S.challenge_note, challenge()) : null,
             )
           : null,
         el(
@@ -651,7 +669,7 @@ const CARDS = {
           busy ? el("li", { class: "now" }, "…") : null,
         ),
         S.setup_error ? el("p", { class: "error" }, S.setup_error) : null,
-        S.setup_error
+        S.setup_error && !policy
           ? main("Change the settings", () => {
               flow.change = false;
               chooseMdm(S.mdm);
@@ -1111,6 +1129,27 @@ function giveCallsigns(ids) {
 
 function settings() {
   act("/api/form", { mdm: S.mdm }, (answer) => {
+    // Its steps on the card a setup shows them on; a refusal before it starts is said here. The button
+    // is disabled as it is pressed, so a second press sends nothing
+    const resend = (event) => {
+      const pressed = event.currentTarget;
+      pressed.disabled = true;
+      act(
+        "/api/policy",
+        {},
+        () => {
+          dialog.close();
+          flow.form = answer;
+          flow.again = false;
+          flow.policy = true;
+          checklist();
+        },
+        (text) => {
+          pressed.disabled = false;
+          tell(text);
+        },
+      );
+    };
     const said = (each) =>
       each.secret
         ? each.remembered
@@ -1126,7 +1165,7 @@ function settings() {
     };
     submit = null;
     const close = main("Close", () => dialog.close(), false, "plain");
-    open(
+    const tell = open(
       "Settings",
       [
         el("h3", { class: "sect" }, `${answer.title} for `, named(S.active)),
@@ -1136,6 +1175,7 @@ function settings() {
           answer.fields.filter((each) => said(each)).map((each) => [el("dt", {}, each.label), el("dd", {}, said(each))]),
         ),
         second(`Change the ${answer.title} settings`, change),
+        S.policy ? [el("h3", { class: "sect" }, "Policy"), el("p", { class: "muted" }, S.policy), second("Send the policy again", resend, S.busy.includes("policy") || S.busy.includes("setup"))] : null,
         el("h3", { class: "sect" }, "Log"),
         el("div", { class: "copyrow" }, copyable(S.log, "Log"), tool("Copy", () => copy(S.log))),
         el("p", { class: "muted" }, `odmdm-connector ${S.version}`),

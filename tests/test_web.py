@@ -15,11 +15,23 @@ from typing import Any
 import pytest
 
 from odmdm_connector import app, browser, console, store, web
-from odmdm_connector.mdm import ASK_AGAIN, State, Step
+from odmdm_connector.mdm import ASK_AGAIN, SEND_POLICY, State, Step
 from odmdm_connector.settings import Settings
 from odmdm_connector.testing import FakeMdm
 
-from .test_app import CHALLENGE, KEPT, LINE, NOW, TOKEN_VALUES, VALUES, Addressed, HalfSetUp, Rig
+from .test_app import (
+    CHALLENGE,
+    GOLDEN,
+    KEPT,
+    LINE,
+    NOW,
+    TOKEN_VALUES,
+    VALUES,
+    Addressed,
+    FleetFields,
+    HalfSetUp,
+    Rig,
+)
 from .test_store import MemoryBackend
 
 Answer = tuple[int, http.client.HTTPMessage, bytes]
@@ -918,3 +930,123 @@ def test_the_phones_say_which_have_their_certificates_and_which_asking_again_can
     rows = [(row["id"], row["ready"], row["askable"]) for row in served.state()["rows"]]
 
     assert rows == [("a1", False, askable), ("a2", False, False), ("a3", True, False)]
+
+
+def test_the_policy_is_sent_again_from_the_page_its_steps_shown_as_a_setups(served: Served) -> None:
+    """Offered while the MDM connected can send it; its steps and its refusal take the setup's place"""
+    assert served.state()["policy"] == ""
+    served.post("/api/add", {"line": LINE})
+    served.post("/api/connect", {"mdm": "fake", "values": VALUES})
+    offered = served.state()["policy"]
+    served.rig.classes["fake"] = HalfSetUp
+    served.post("/api/connect", {"mdm": "fake", "values": VALUES})
+    assert served.state()["setup_error"] == "The fake MDM refused the template"
+    served.rig.classes["fake"] = FakeMdm
+    served.post("/api/connect", {"mdm": "fake", "values": VALUES})
+    served.state()
+
+    said = served.post("/api/policy")
+    state = served.state()
+
+    assert offered.startswith("For a phone whose browser refuses its certificate:")
+    assert said == {"said": "Sending the policy again for Deploy App unit.example.fi."}
+    assert [(step["label"], step["message"]) for step in state["steps"]] == [
+        ("Group Deploy App enrols at https://unit.example.fi/scep", ""),
+        ("Certificate template stated", "forced"),
+    ]
+    assert (state["setup_error"], state["status"], "policy" in state["busy"]) == (
+        "",
+        "Fake MDM has sent the policy again to the phones of Deploy App unit.example.fi.",
+        False,
+    )
+    served.rig.classes["fake"] = HalfSetUp
+    served.post("/api/connect", {"mdm": "fake", "values": VALUES})
+    served.state()
+    served.post("/api/policy")
+    refused = served.state()
+    assert ([step["label"] for step in refused["steps"]], refused["setup_error"]) == (
+        ["Group found"],
+        "The fake MDM refused the template",
+    )
+
+
+def test_the_policy_is_refused_for_an_mdm_that_cannot_send_it(served: Served) -> None:
+    served.rig.classes["fake"] = FakeMdm.lacking(SEND_POLICY)
+    served.post("/api/add", {"line": LINE})
+    served.post("/api/connect", {"mdm": "fake", "values": VALUES})
+
+    assert served.state()["policy"] == ""
+    assert served.post("/api/policy", status=400) == {"error": "The fake MDM cannot send_policy"}
+
+
+class Terminal:
+    """A terminal's stdin or stdout, or a pipe's, as isatty says"""
+
+    def __init__(self, tty: bool) -> None:
+        self.tty = tty
+        self.written: list[str] = []
+
+    def isatty(self) -> bool:
+        return self.tty
+
+    def write(self, text: str) -> int:
+        self.written.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize(
+    ("command", "stdin", "stdout", "waits"),
+    [
+        ([], True, True, True),
+        ([], False, True, False),
+        ([], True, False, False),
+        (["web"], True, True, False),
+        (["web", "--no-browser"], True, True, False),
+    ],
+)
+def test_a_second_start_by_a_double_click_waits_for_enter_on_a_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: list[str],
+    stdin: bool,
+    stdout: bool,
+    waits: bool,
+) -> None:
+    """Its window on Windows would close before the sentence is read; with a command, a script must never hang"""
+    _web(WebRig(tmp_path / "config"), monkeypatch)
+    asked: list[str] = []
+
+    def enter(prompt: str = "") -> str:
+        asked.append(prompt)
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", enter)
+    monkeypatch.setattr(sys, "stdin", Terminal(stdin))
+    monkeypatch.setattr(sys, "stdout", Terminal(stdout))
+    with socket.socket() as taken:
+        taken.bind(("127.0.0.1", 0))
+        taken.listen()
+        monkeypatch.setattr(web, "PORT", taken.getsockname()[1])
+
+        code = console.main(command)
+
+    assert code == 1
+    assert "The connector may be running already: use its page." in capsys.readouterr().err
+    assert asked == ([console.PRESS_ENTER] if waits else [])
+
+
+def test_the_team_card_suggests_the_deployments_team(served: Served) -> None:
+    served.rig.classes["fake"] = FleetFields
+    served.post("/api/add", {"line": GOLDEN})
+
+    [team] = [each for each in served.post("/api/form", {"mdm": "fake"})["fields"] if each["key"] == "team"]
+
+    assert (team["value"], team["default"], team["required"]) == (
+        "golden-monkey DeployApp",
+        "golden-monkey DeployApp",
+        True,
+    )
