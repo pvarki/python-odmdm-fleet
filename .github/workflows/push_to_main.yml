@@ -29,6 +29,8 @@ jobs:
       contents: write
       packages: read
       pull-requests: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -42,3 +44,68 @@ jobs:
           release: ${{ steps.tag.outputs.version }}
           product: odmdm-connector
           attach-to-release: "true"
+
+  # The release's mdm-connector folder, built from the tagged commit by the same workflow as a change
+  mdm-connector:
+    name: Connector files
+    needs: release
+    if: needs.release.outputs.tag != ''
+    uses: ./.github/workflows/mdm_connector.yml
+    with:
+      ref: ${{ github.sha }} # the tag's commit (tag-release tags only HEAD); no '+' through a checkout ref
+
+  # The folder as ONE archive and its SHA-256 on the release: what Deploy App's UI image fetches and
+  # pins; and SHA256SUMS, each file's SHA-256, which the MDM page shows for the file it offers. The
+  # names carry no version, so that only the tag changes in the address. Assets already on the release
+  # are kept: a UI image may pin the archive's SHA-256, and a rebuild would not match it.
+  publish-mdm-connector:
+    name: Attach the mdm-connector folder to the release
+    needs: [release, mdm-connector]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.release.outputs.tag }}
+    defaults:
+      run:
+        shell: bash # with pipefail, so that a failing tar fails the pack
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: mdm-connector
+          path: mdm-connector
+      # The gate refuses a folder Deploy App's UI image would not unpack: a file connector.json does not
+      # name, anything but a plain file, a name outside its pattern. A release's assets are never replaced.
+      - name: Pack it as mdm-connector.tar.gz, with its SHA-256 and each file's beside it
+        run: |
+          (cd mdm-connector && jq -r '.files[] | "\(.sha256)  \(.file)"' connector.json | sha256sum -c --strict)
+          diff <({ jq -r '.files[].file' mdm-connector/connector.json; echo connector.json; } | LC_ALL=C sort) \
+            <(find mdm-connector -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)
+          test -z "$(find mdm-connector -mindepth 1 ! -type f)"
+          jq -e '(.files | length > 0) and all(.files[].file; test("^[A-Za-z0-9_+-][A-Za-z0-9._+-]{0,119}$"))' \
+            mdm-connector/connector.json > /dev/null
+          (cd mdm-connector && jq -r '.files[].file' connector.json | LC_ALL=C sort | xargs -r -d '\n' sha256sum --) > SHA256SUMS
+          (cd mdm-connector && sha256sum -c --strict ../SHA256SUMS)
+          tar --sort=name --owner=0 --group=0 --numeric-owner --mode=u=rwX,go=rX --mtime=@0 -cf - mdm-connector | gzip -n > mdm-connector.tar.gz
+          sha256sum mdm-connector.tar.gz | tee mdm-connector.tar.gz.sha256
+          sha256sum -c --strict mdm-connector.tar.gz.sha256
+      # All three or none: a rebuilt SHA256SUMS would not describe an archive already attached
+      - name: Attach the three to the release
+        run: |
+          assets=(mdm-connector.tar.gz mdm-connector.tar.gz.sha256 SHA256SUMS)
+          gh release view "$TAG" --json assets --jq '.assets[].name' > attached.txt
+          present=0
+          for asset in "${assets[@]}"; do
+            if grep -Fqx "$asset" attached.txt; then present=$((present + 1)); fi
+          done
+          if [ "$present" -eq "${#assets[@]}" ]; then
+            echo "::warning::$TAG already has ${assets[*]}, kept as they are"
+            exit 0
+          fi
+          if [ "$present" -ne 0 ]; then
+            echo "::error::$TAG has only some of ${assets[*]}: complete or remove them by hand, and never replace an attached archive"
+            exit 1
+          fi
+          gh release upload "$TAG" "${assets[@]}"
