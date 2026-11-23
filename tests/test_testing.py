@@ -1,6 +1,7 @@
 """The plugin authors' test kit, run against the fake and against Fleet over the stub"""
 
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import replace
 from typing import ClassVar
 
 import pytest
@@ -107,6 +108,36 @@ class _Lying(FakeMdm):
         raise MdmError("Something else")
 
 
+class _Older(FakeMdm):
+    """Made before END was in the contract: no end, and END not in missing"""
+
+    end = None  # type: ignore[assignment]
+
+
+class _Silent(FakeMdm):
+    """Ends once, then says nothing of what it found left"""
+
+    def end(self, window: Settings) -> list[str]:
+        return super().end(window) if not self.ended else []
+
+
+class _Renaming(FakeMdm):
+    """Ends, and takes the phones' names with it"""
+
+    def end(self, window: Settings) -> list[str]:
+        self.group = [replace(phone, callsign="") for phone in self.group]
+        return super().end(window)
+
+
+class _Ending(FakeMdm):
+    """Says it cannot end, then ends anyway"""
+
+    missing: ClassVar[Mapping[str, str]] = {"end": "Not here"}
+
+    def end(self, window: Settings) -> list[str]:
+        return ["Ended"]
+
+
 @pytest.mark.parametrize(
     ("factory", "check", "says"),
     [
@@ -117,6 +148,10 @@ class _Lying(FakeMdm):
         (_Lying, contract.asks_again, "listed as missing but did not raise"),
         (_Lying, contract.sets_the_challenge, "must raise MdmError with its sentence"),
         (_Forcing, contract.sends_the_policy_again, "send_policy is listed as missing but did not raise"),
+        (_Older, contract.ends, "end must be a method, or END listed in missing"),
+        (_Silent, contract.ends, "end, called again, must say what it found left"),
+        (_Renaming, contract.ends, "must leave the group's phones and their names as they were"),
+        (_Ending, contract.ends, "end is listed as missing but did not raise"),
     ],
 )
 def test_a_plugin_breaking_the_contract_fails_its_check(

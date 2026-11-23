@@ -23,6 +23,7 @@ from ..mdm import (
     API_VERSION,
     ASK_AGAIN,
     CAPABILITIES,
+    END,
     SEND_POLICY,
     SET_CHALLENGE,
     SETUP,
@@ -177,6 +178,21 @@ def sends_the_policy_again(factory: Factory) -> None:
     _require(steps and all(isinstance(step, Step) for step in steps), "setup with force must report Steps")
 
 
+def ends(factory: Factory) -> None:
+    """Ends the Deploy App twice over, its phones and their names left as they were; or says it cannot"""
+    mdm = factory()
+    if _lacking(mdm, END, lambda: mdm.end(WINDOW)):
+        return
+    _require(callable(getattr(mdm, "end", None)), "end must be a method, or END listed in missing with its sentence")
+    before = [(phone.id, phone.callsign) for phone in mdm.phones()]
+    _lines(mdm.end(WINDOW), "end")
+    again = mdm.end(WINDOW)
+    _lines(again, "end, called again")
+    _require(again, "end, called again, must say what it found left")
+    after = [(phone.id, phone.callsign) for phone in mdm.phones()]
+    _require(after == before, "end must leave the group's phones and their names as they were")
+
+
 CHECKS: tuple[Check, ...] = (
     declares_the_contract_version,
     declares_its_fields,
@@ -189,4 +205,5 @@ CHECKS: tuple[Check, ...] = (
     sets_the_challenge,
     sets_up,
     sends_the_policy_again,
+    ends,
 )

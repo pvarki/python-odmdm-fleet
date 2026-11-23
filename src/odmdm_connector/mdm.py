@@ -4,9 +4,9 @@ Standard library only, so a plugin depends on nothing but this package. A plugin
 satisfies Mdm, published under the entry point group ``odmdm_connector.mdm``. The connector checks
 the class's API_VERSION before it uses it.
 
-Every sentence a plugin hands back, a Step's message, a line from name or ask_again, an MdmError,
-is shown to the operator as it is, by the command line and the page alike, so it names no
-command, option or button. The SCEP challenge is never in one.
+Every sentence a plugin hands back, a Step's message, a line from name, ask_again or end, an
+MdmError, is shown to the operator as it is, by the command line and the page alike, so it names
+no command, option or button. The SCEP challenge is never in one.
 """
 
 from collections.abc import Iterator, Mapping, Sequence
@@ -24,7 +24,9 @@ SET_CHALLENGE = "set_challenge"
 ASK_AGAIN = "ask_again"
 #: setup with force: the policy sent to the phones again even if unchanged
 SEND_POLICY = "send_policy"
-CAPABILITIES = (SETUP, SET_CHALLENGE, ASK_AGAIN, SEND_POLICY)
+#: end: this Deploy App taken out of the MDM once its deployment is over
+END = "end"
+CAPABILITIES = (SETUP, SET_CHALLENGE, ASK_AGAIN, SEND_POLICY, END)
 #: In a Field's default, the deployment's name: the first label of its Deploy App's host
 DEPLOYMENT = "{deployment}"
 
@@ -168,12 +170,38 @@ class Mdm(Protocol):
         Answers the lines to show the operator, none when nothing was asked.
         """
 
+    def end(self, window: Settings) -> list[str]:
+        """Take this Deploy App out of the MDM once its deployment is over
+
+        The group's phones lose this Deploy App's certificate; the group, its phones, their names
+        and their apps stay, ready for the group's next Deploy App. window says which Deploy App by
+        its scep_url; its challenge is not used. Answers the lines to show the operator: what was
+        taken out and what stays. Called again, it takes out what an earlier call left and says so
+        when nothing was left. An MDM that cannot lists END in missing.
+        """
+
+
+def cannot_end(mdm: "Mdm | type[Mdm]") -> str:
+    """Why this MDM cannot end a Deploy App, empty when it can
+
+    A plugin made before END was in the contract has no end and does not list END in missing: it
+    cannot, and the connector says so in a sentence of its own rather than call what is not there.
+    """
+    if END in mdm.missing:
+        return mdm.missing[END]
+    if not callable(getattr(mdm, "end", None)):
+        return (
+            f"This {mdm.title} plugin cannot end a Deploy App in {mdm.title}: it was made before the connector could."
+        )
+    return ""
+
 
 __all__ = [
     "API_VERSION",
     "ASK_AGAIN",
     "CAPABILITIES",
     "DEPLOYMENT",
+    "END",
     "SEND_POLICY",
     "SETUP",
     "SET_CHALLENGE",
@@ -184,4 +212,5 @@ __all__ = [
     "Settings",
     "State",
     "Step",
+    "cannot_end",
 ]
