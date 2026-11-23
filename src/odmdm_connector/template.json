@@ -1,0 +1,80 @@
+{
+  "_comment": [
+    "What a Deploy App deployment's phones need. apply states this one unless given another: copy it,",
+    "change what to install, and apply it with",
+    "  odmdm-connector apply --template template.json --domain <domain>",
+    "",
+    "Placeholders filled in at apply time: {domain}, {mtls_url}, {key_alias}.",
+    "",
+    "APPS INSTALL AT ENROLMENT AND AT NO OTHER TIME on managed Android. A phone that has already",
+    "joined will not pick up a change here; it has to enrol again, under a callsign that has not",
+    "been spent."
+  ],
+  "apps": [
+    {
+      "_comment": "The browser is installed, not assumed: a work profile does not inherit the personal profile's copy, and the launcher link below is a browser shortcut, so without it that install fails and takes the rest of the enrolment burst with it.",
+      "config": {
+        "AutoSelectCertificateForUrls": [
+          "{\"pattern\":\"{mtls_url}\",\"filter\":{}}"
+        ],
+        "_comment": "choosePrivateKeyRules in the policy settles WHICH key may be used. The browser still decides whether to send one at all, and with no matching entry here it declines rather than prompting, which the server answers as mtls_fail and looks exactly like a missing certificate. Both halves are needed. The value is a list of JSON strings, which is the schema, not a mistake."
+      },
+      "package": "com.android.chrome",
+      "preinstall": true
+    },
+    {
+      "_comment": "ATAK-CIV. Large, and Play unpacks the enrolment set together, so on a device short of space the whole burst can fail.",
+      "package": "com.atakmap.app.civ",
+      "preinstall": true
+    },
+    {
+      "_comment": "Element Classic rather than Element X: X accepts no managed configuration at all, so its homeserver cannot be pushed and the user would type it once per device.",
+      "config": {
+        "im.vector.app.serverConfigDefaultHomeserverUrlString": "https://synapse.{domain}"
+      },
+      "package": "im.vector.app",
+      "preinstall": true
+    }
+  ],
+  "certificate": {
+    "_comment": [
+      "The template Fleet fills in per phone. Its common name becomes the phone's callsign: 3-32",
+      "letters, digits or inner hyphens. This is the name `odmdm-connector name` gives a phone, and",
+      "the connector refuses any other common name: one the phone supplies, such as its serial",
+      "number, would make a leaked enrolment link enough for an identity. Fleet's id for the phone",
+      "follows it as OU, so the deployment can tell later which device a callsign was issued to;",
+      "leave the OU out only for a team that already has phones under a subject without it.",
+      "The name becomes the Android keystore alias, so it is per deployment.",
+      "No certificate authority is named: the connector finds this Deploy App's in the MDM by the",
+      "address it serves, and makes one when there is none, called ODMDM_ and the first part of the",
+      "Deploy App's host name.",
+      "So one MDM can serve several Deploy Apps. \"authority\": \"NAME\" here gives a new one that name."
+    ],
+    "name": "{key_alias}",
+    "subject": "CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART, OU=$FLEET_VAR_HOST_UUID"
+  },
+  "link_app": {
+    "_comment": "A launcher icon so nobody has to know where the server lives. It is a browser shortcut, so it only works alongside the browser and the certificate.",
+    "title": "Deploy App",
+    "url": "{mtls_url}/"
+  },
+  "policy": {
+    "_comment_key": "urlPattern is a java.util.regex pattern matched against the WHOLE string the app passes. Chrome passes host:port with no scheme (mtls.example.fi:443), so a pattern starting https:// matches nothing, the device offers no key, and the server answers mtls_fail exactly as if no certificate existed. This one takes both forms and still only the mTLS host.",
+    "_comment_safety": "Only the named apps may use the key, the user cannot hand it to another app, nothing installs from unknown sources, and apps ask for their permissions as usual. The connector refuses a template that loosens the first three.",
+    "advancedSecurityOverrides": {
+      "untrustedAppsPolicy": "DISALLOW_INSTALL"
+    },
+    "choosePrivateKeyRules": [
+      {
+        "packageNames": [
+          "com.android.chrome",
+          "com.atakmap.app.civ",
+          "im.vector.app"
+        ],
+        "privateKeyAlias": "{key_alias}",
+        "urlPattern": "(https://)?mtls\\.{domain}(:443)?(/.*)?"
+      }
+    ],
+    "privateKeySelectionEnabled": false
+  }
+}

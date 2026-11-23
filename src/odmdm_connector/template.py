@@ -1,0 +1,206 @@
+"""What a deployment's devices need, read from a file rather than known here
+
+This module deliberately contains no package name, no managed-configuration key and no product
+of any kind. What a deployment installs is a property of that deployment, not of the connector,
+so the whole answer arrives as a document an operator supplies and this module only validates it
+and fills in the deployment's own values.
+
+The placeholders are the only vocabulary shared with the document:
+
+``{domain}``     the deployment's DNS name
+``{mtls_url}``   where a client certificate is expected, ``https://mtls.<domain>``
+``{key_alias}``  the Android keystore alias the certificate lands under, which is the name of the
+                 MDM certificate template, because installing a second key under an existing alias
+                 fails
+"""
+
+import json
+import logging
+import re
+from dataclasses import dataclass, field
+from importlib import resources
+from importlib.resources.abc import Traversable
+from typing import Any
+
+LOGGER = logging.getLogger(__name__)
+
+#: The template shipped with the package: what a Deploy App deployment's phones need. Read through
+#: importlib.resources, so that it is found also when the package runs from inside a zip file.
+EXAMPLE = resources.files(__package__).joinpath("template.json")
+
+
+class TemplateError(ValueError):
+    """The document is not something we can act on"""
+
+
+#: The callsign as the common name, from the name the operator gives the phone, and optionally the
+#: MDM's own device id beside it. Anything the phone or the enrolment link supplies, a serial
+#: number for one, would let whoever holds a leaked enrolment link pick an identity.
+SUBJECT = re.compile(r"CN=\$FLEET_VAR_HOST_END_USER_IDP_USERNAME(_LOCAL_PART)?(\s*,\s*OU=\$FLEET_VAR_HOST_UUID)?")
+
+
+def _unsafe(policy: dict[str, Any], certificate: dict[str, Any] | None) -> str:
+    """Why this policy and certificate would hand out more than the deployment means to, or empty
+
+    Shapes and a few safety rules only. Which apps are named is the template's business.
+    """
+    if certificate is not None and not SUBJECT.fullmatch(str(certificate.get("subject", ""))):
+        return (
+            "the certificate subject must be CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART, optionally "
+            "followed by OU=$FLEET_VAR_HOST_UUID, so the callsign is the name the operator gave the phone"
+        )
+    rules = policy.get("choosePrivateKeyRules", [])
+    if not isinstance(rules, list):
+        return "choosePrivateKeyRules must be a list"
+    for rule in rules:
+        names = rule.get("packageNames") if isinstance(rule, dict) else None
+        if not isinstance(names, list) or not names or not all(isinstance(n, str) and n for n in names):
+            return "every choosePrivateKeyRules entry must name its apps in packageNames, or any app may use the key"
+    if policy.get("privateKeySelectionEnabled") is True:
+        return "privateKeySelectionEnabled must not be true, or the user can hand the key to any app"
+    overrides = policy.get("advancedSecurityOverrides") or {}
+    untrusted = str(overrides.get("untrustedAppsPolicy", "")) if isinstance(overrides, dict) else ""
+    if untrusted.startswith("ALLOW_") or policy.get("installUnknownSourcesAllowed") is True:
+        return "the policy must not allow installs from unknown sources (untrustedAppsPolicy DISALLOW_INSTALL)"
+    return ""
+
+
+@dataclass(frozen=True)
+class App:
+    """One application the deployment wants on its devices"""
+
+    package: str
+    #: Install it as part of enrolment rather than leaving it available on demand. On managed
+    #: Android this is the only automatic path, and it applies at enrolment only.
+    preinstall: bool = True
+    #: Managed configuration for the app, already substituted
+    config: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Certificate:
+    """The certificate the MDM asks us for on a device's behalf
+
+    ``subject`` is identity configuration, not cosmetics: its common name becomes the device's
+    callsign. It lives here so it is reviewed and deployed like everything else, rather than typed
+    into a console once and forgotten.
+
+    ``name`` becomes the Android keystore alias, and installing a second key under an existing
+    alias fails, so it is per deployment rather than per device.
+    """
+
+    name: str
+    subject: str
+    #: The MDM's certificate authority by name. Without one the MDM plugin finds the Deploy App's
+    #: own by the address it serves, and makes it when there is none.
+    authority: str = ""
+
+
+@dataclass(frozen=True)
+class LinkApp:
+    """A managed web app, so the deployment has an icon on the launcher"""
+
+    title: str
+    url: str
+
+
+@dataclass(frozen=True)
+class MdmTemplate:
+    """Everything to state to an MDM about one deployment"""
+
+    apps: tuple[App, ...]
+    policy: dict[str, Any]
+    link_app: LinkApp | None = None
+    certificate: Certificate | None = None
+
+    @property
+    def preinstall_packages(self) -> tuple[str, ...]:
+        return tuple(app.package for app in self.apps if app.preinstall)
+
+
+def _strip_comments(value: Any) -> Any:
+    """Drop keys beginning with an underscore, at any depth
+
+    The document carries the reasoning for what it asks for, because the reasoning is the part
+    that was expensive to learn. None of it is for the MDM: an annotation left in an app's
+    configuration would be pushed to the device as a real setting.
+    """
+    if isinstance(value, dict):
+        return {key: _strip_comments(item) for key, item in value.items() if not str(key).startswith("_")}
+    if isinstance(value, list):
+        return [_strip_comments(item) for item in value]
+    return value
+
+
+def _substitute(value: Any, values: dict[str, str]) -> Any:
+    """Fill the placeholders wherever they appear, at any depth"""
+    if isinstance(value, str):
+        for key, replacement in values.items():
+            value = value.replace("{" + key + "}", replacement)
+        return value
+    if isinstance(value, dict):
+        return {key: _substitute(item, values) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_substitute(item, values) for item in value]
+    return value
+
+
+def load(path: Traversable, domain: str, key_alias: str) -> MdmTemplate:
+    """Read the document and fill in this deployment's values
+
+    Raises TemplateError rather than letting a malformed document reach the MDM, because a half
+    applied template is worse than none: apps install at enrolment only, so a device that joins
+    against a broken one has to be enrolled again.
+    """
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise TemplateError(f"cannot read {path}: {exc}") from exc
+    except ValueError as exc:
+        raise TemplateError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise TemplateError(f"{path} must contain an object")
+
+    values = {"domain": domain, "mtls_url": f"https://mtls.{domain}", "key_alias": key_alias}
+    raw = _strip_comments(_substitute(raw, values))
+
+    apps: list[App] = []
+    for entry in raw.get("apps", []):
+        if not isinstance(entry, dict) or not entry.get("package"):
+            raise TemplateError(f"every app needs a package, got {entry!r}")
+        config = entry.get("config", {})
+        if not isinstance(config, dict):
+            raise TemplateError(f"config for {entry['package']} must be an object")
+        apps.append(App(package=str(entry["package"]), preinstall=bool(entry.get("preinstall", True)), config=config))
+    if not apps:
+        raise TemplateError("the template installs nothing; at least one app is required")
+
+    policy = raw.get("policy", {})
+    if not isinstance(policy, dict):
+        raise TemplateError("policy must be an object")
+
+    link = None
+    if raw.get("link_app"):
+        entry = raw["link_app"]
+        if not isinstance(entry, dict) or not entry.get("title") or not entry.get("url"):
+            raise TemplateError("link_app needs a title and a url")
+        link = LinkApp(title=str(entry["title"]), url=str(entry["url"]))
+
+    LOGGER.info(
+        "Template names %s apps, %s of them installed at enrolment", len(apps), len([a for a in apps if a.preinstall])
+    )
+    certificate = None
+    if raw.get("certificate"):
+        entry = raw["certificate"]
+        missing = [key for key in ("name", "subject") if not entry.get(key)]
+        if not isinstance(entry, dict) or missing:
+            raise TemplateError(f"certificate needs name and subject; missing {missing}")
+        certificate = Certificate(
+            name=str(entry["name"]), subject=str(entry["subject"]), authority=str(entry.get("authority") or "")
+        )
+
+    unsafe = _unsafe(policy, raw.get("certificate") or None)
+    if unsafe:
+        raise TemplateError(unsafe)
+
+    return MdmTemplate(apps=tuple(apps), policy=policy, link_app=link, certificate=certificate)

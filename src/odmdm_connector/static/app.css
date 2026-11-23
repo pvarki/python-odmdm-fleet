@@ -1,0 +1,1210 @@
+/* Deploy App's dark look: setting up is one card at a time, as its login is; the daily work is the
+   earlier window's layout across the whole width, with the browser's own dialogs over it */
+
+:root {
+  --page: #1a1a1a;
+  --text: #ffffff;
+  --muted: #a3a3a3;
+  --dim: #808080;
+  --card: #222222;
+  --raise: #2a2a2a;
+  --table: #1e1e1e;
+  --line: #333333;
+  --line-strong: #444444;
+  --field: #1c1c1c;
+  --main: #ff6b1a;
+  --main-press: #e85d10;
+  --main-done: #a14a17;
+  --amber: #f5a524;
+  --red: #ff6b6b;
+  --green: #4cc38a;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--page);
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
+  font-family: "Geist Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+p {
+  margin: 0 0 16px;
+  overflow-wrap: anywhere;
+}
+
+h1 {
+  font-size: 18px;
+  margin: 0 0 6px;
+  overflow-wrap: anywhere;
+}
+
+/* A Deploy App's name in a title: whole on its line, broken only when wider than the line */
+.name {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+h2 {
+  font-size: 15px;
+  margin: 8px 0 8px;
+}
+
+h3 {
+  font-size: 15px;
+  margin: 0 0 10px;
+  overflow-wrap: anywhere;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.error {
+  color: var(--red);
+}
+
+.warn {
+  color: var(--amber);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+input[type="text"]:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--main);
+}
+
+button:focus-visible,
+input[type="checkbox"]:focus-visible,
+summary:focus-visible,
+a:focus-visible,
+tr:focus-visible {
+  outline: 2px solid var(--main);
+  outline-offset: 2px;
+}
+
+/* Buttons */
+
+.main,
+.second {
+  display: block;
+  width: 100%;
+  min-height: 56px;
+  border-radius: 10px;
+  font-weight: 700;
+  margin: 0 0 12px;
+  padding: 8px 16px;
+}
+
+.main {
+  background: var(--main);
+  color: #ffffff;
+  border: 1px solid var(--main);
+}
+
+.main:hover:not(:disabled) {
+  background: var(--main-press);
+}
+
+.main:disabled {
+  opacity: 0.45;
+}
+
+.main.plain {
+  background: transparent;
+  border-color: var(--line-strong);
+}
+
+.main.danger {
+  background: transparent;
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.second {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+}
+
+.second:hover:not(:disabled),
+.choice:hover,
+.tool:hover:not(:disabled) {
+  border-color: var(--main);
+}
+
+.back {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.back:hover {
+  color: var(--text);
+}
+
+.choice {
+  display: block;
+  width: 100%;
+  min-height: 56px;
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  text-align: left;
+  padding: 12px 16px;
+  margin: 0 0 12px;
+}
+
+.choice strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.choice span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.closing {
+  color: var(--amber);
+}
+
+.closed {
+  color: var(--red);
+}
+
+/* Inputs */
+
+label {
+  display: block;
+  margin: 0 0 8px;
+}
+
+input[type="text"],
+textarea {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  background: var(--field);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  font: inherit;
+  margin: 0 0 20px;
+}
+
+input[type="text"]:focus,
+textarea:focus {
+  border-color: var(--main);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #6b6b6b;
+}
+
+/* A secret is plain text to the browser, so that no password manager offers to keep it, and masked here */
+.secret {
+  -webkit-text-security: disc;
+}
+
+textarea {
+  resize: vertical;
+  line-height: 1.3;
+}
+
+input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--main);
+}
+
+.check {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: -6px 0 22px;
+}
+
+.hint {
+  font-size: 13px;
+  margin: -12px 0 20px;
+}
+
+/* ---------- Setting up: one card, one thing ---------- */
+
+body.cards {
+  min-height: 100vh;
+  padding: 64px 16px 48px;
+}
+
+.brand {
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  margin-bottom: 28px;
+  overflow-wrap: anywhere;
+}
+
+.card {
+  max-width: 28rem;
+  margin: 0 auto;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 24px;
+}
+
+.lead {
+  color: var(--muted);
+  margin: 0 0 22px;
+}
+
+.topline {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+/* How far a first set-up is: three parts, each named under its line */
+.progress {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  list-style: none;
+  margin: 0 0 24px;
+  padding: 0;
+}
+
+.progress li {
+  border-top: 4px solid var(--line-strong);
+  padding-top: 6px;
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.progress li.done {
+  border-color: var(--main-done);
+  color: var(--muted);
+}
+
+.progress li.now {
+  border-color: var(--main);
+  color: var(--text);
+  font-weight: 700;
+}
+
+/* A picture of the button on Deploy App's page: nothing here to press */
+.lookfor {
+  border: 1px dashed #4a4a4a;
+  border-radius: 12px;
+  padding: 14px 16px 16px;
+  margin: 0 0 18px;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+}
+
+.lookfor small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.lookfor span {
+  display: inline-block;
+  border-radius: 8px;
+  background: var(--main);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 14px;
+  padding: 10px 16px;
+}
+
+.waiting {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  margin: 0;
+}
+
+.pulse {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--main);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    box-shadow: 0 0 0 5px rgba(255, 107, 26, 0.25);
+    opacity: 0.6;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    animation: none;
+  }
+}
+
+.or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 11px;
+  margin: 20px 0;
+}
+
+.or::before,
+.or::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--line);
+}
+
+.athand {
+  border-top: 1px solid var(--line);
+  margin-top: 8px;
+  padding-top: 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.athand strong {
+  color: var(--text);
+}
+
+.athand ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.box {
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.note {
+  border: 1px solid var(--amber);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin: 0 0 20px;
+}
+
+.note p {
+  margin: 0 0 8px;
+}
+
+.note p:last-child {
+  margin: 0;
+}
+
+details.more {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  margin: 0 0 20px;
+}
+
+details.more summary {
+  color: var(--muted);
+  cursor: pointer;
+  margin-bottom: 14px;
+}
+
+/* The setup's steps as the connector reports them */
+ul.run {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 0;
+}
+
+ul.run li {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  padding: 6px 0;
+  overflow-wrap: anywhere;
+}
+
+ul.run li::before {
+  grid-row: span 3;
+}
+
+ul.run li.done::before {
+  content: "✓";
+  color: var(--green);
+}
+
+ul.run li.now::before {
+  content: "◌";
+  color: var(--amber);
+}
+
+ul.run li.hand::before {
+  content: "→";
+  color: var(--amber);
+}
+
+/* What a step adds under its label: one line of it per line */
+ul.run li > span {
+  color: var(--muted);
+  font-size: 14px;
+  white-space: pre-line;
+}
+
+.copyrow {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.copyrow input[type="text"] {
+  flex: 1;
+  min-width: 0;
+  min-height: 40px;
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+/* ---------- The phones: the earlier window, dark, across the width ---------- */
+
+body.app #view {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.top .name {
+  white-space: nowrap;
+}
+
+.picker {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 12px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.picker small {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.picker strong {
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.picker:hover {
+  border-color: var(--main);
+}
+
+.work {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 16px 24px 0;
+}
+
+.app-form {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.window {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  font-weight: 700;
+  font-size: 16px;
+  margin: 0 0 14px;
+}
+
+.window .said {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.window .dot {
+  margin-right: 10px;
+}
+
+.window.closing {
+  color: var(--amber);
+}
+
+.window.closed {
+  color: var(--red);
+}
+
+.window.none {
+  color: var(--muted);
+}
+
+.window .tool {
+  min-height: 34px;
+  padding: 4px 12px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text);
+}
+
+.out {
+  line-height: 20px;
+  color: var(--red);
+  font-size: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 6px 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.window.none .out {
+  color: var(--text);
+}
+
+.out:hover {
+  border-color: var(--main);
+}
+
+.tools,
+.select {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tool {
+  display: inline-block;
+  width: auto;
+  min-height: 40px;
+  margin: 0;
+  padding: 6px 16px;
+  border-radius: 8px;
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.tool.go {
+  background: var(--main);
+  border-color: var(--main);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.tool:disabled {
+  opacity: 0.4;
+}
+
+.tool.small {
+  min-height: 34px;
+  padding: 4px 12px;
+  font-size: 14px;
+}
+
+.tool.push {
+  margin-left: auto;
+}
+
+.select {
+  font-size: 14px;
+}
+
+.select .count {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+/* The table fills what is left of the window and scrolls inside it */
+.table {
+  flex: 1 1 0;
+  min-height: 14rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--table);
+}
+
+.table.settling {
+  opacity: 0.5;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 14px;
+}
+
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--card);
+  color: var(--muted);
+  font-weight: 400;
+}
+
+td.cert,
+th.cert {
+  width: 100%;
+  white-space: normal;
+  min-width: 10rem;
+}
+
+td.pick,
+th.pick {
+  width: 1%;
+  padding-right: 0;
+}
+
+.pick input {
+  vertical-align: -3px;
+}
+
+tbody tr {
+  cursor: pointer;
+}
+
+tbody tr:hover td {
+  background: var(--raise);
+}
+
+tr.sel td {
+  background: #2c2118;
+}
+
+tr.bad td.cert {
+  color: var(--red);
+}
+
+td.nocall {
+  color: var(--dim);
+}
+
+tbody tr:hover td.empty {
+  background: none;
+}
+
+td.empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 72px 16px;
+  white-space: normal;
+  border-bottom: 0;
+  cursor: default;
+}
+
+.dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+  vertical-align: 1px;
+  background: var(--dim);
+}
+
+.dot.ok,
+.window.open .dot {
+  background: var(--green);
+}
+
+.dot.on,
+.window.closing .dot {
+  background: var(--amber);
+}
+
+.dot.bad,
+.window.closed .dot {
+  background: var(--red);
+}
+
+.status {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 10px 24px 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.status > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.status .updated {
+  flex: none;
+  white-space: nowrap;
+}
+
+.status p {
+  margin: 0;
+}
+
+.status ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+/* The Deploy Apps, under the picker */
+.menu {
+  position: fixed;
+  inset: 52px 24px auto auto;
+  width: 25rem;
+  max-width: calc(100vw - 32px);
+  margin: 0;
+  padding: 6px;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+}
+
+.menu .item {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.menu .item:hover,
+.menu .item.now {
+  background: var(--raise);
+}
+
+.menu .item strong {
+  display: block;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.menu .item small {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.menu .item small.closing {
+  color: var(--amber);
+}
+
+.menu .item small.closed {
+  color: var(--red);
+}
+
+.menu .mark {
+  color: var(--main);
+}
+
+.menu .act {
+  display: block;
+  padding-left: 34px;
+}
+
+.menu .danger {
+  color: var(--red);
+}
+
+.menu hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 6px 0;
+}
+
+/* ---------- Dialogs ---------- */
+
+dialog {
+  width: calc(100% - 32px);
+  max-width: 760px;
+  max-height: calc(100vh - 64px);
+  margin: 48px auto auto;
+  padding: 0;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.62);
+}
+
+dialog header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 24px 0;
+}
+
+dialog h2 {
+  margin: 0;
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+.x {
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font-size: 22px;
+  line-height: 1;
+  padding: 4px 6px;
+}
+
+.x:hover {
+  color: var(--text);
+}
+
+dialog .body {
+  padding: 18px 24px 4px;
+}
+
+dialog .body > .error:empty {
+  display: none;
+}
+
+dialog .body .second {
+  display: inline-block;
+  width: auto;
+  min-height: 40px;
+  padding: 6px 16px;
+  font-weight: 400;
+}
+
+dialog footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 16px 24px 20px;
+  border-top: 1px solid var(--line);
+  margin-top: 8px;
+}
+
+dialog footer .main,
+dialog footer .second {
+  width: auto;
+  min-height: 48px;
+  margin: 0;
+  padding: 8px 22px;
+}
+
+dialog footer .check {
+  margin: 0 auto 0 0;
+}
+
+/* Numbered or from a list */
+.mode {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.mode button {
+  background: none;
+  border: 0;
+  padding: 9px 18px;
+  min-height: 40px;
+  color: var(--muted);
+}
+
+.mode button[aria-pressed="true"] {
+  background: var(--raise);
+  color: var(--text);
+  box-shadow: inset 0 -3px 0 var(--main);
+}
+
+.inline {
+  display: flex;
+  gap: 12px 20px;
+}
+
+.inline .grow {
+  flex: 0 1 14rem;
+  min-width: 0;
+}
+
+.inline .num {
+  flex: 0 0 9rem;
+}
+
+dialog label {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+dialog .check {
+  font-size: 15px;
+  color: var(--text);
+  margin-bottom: 0;
+}
+
+dialog h3 {
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 400;
+  margin: 0 0 8px;
+}
+
+dialog h3.sect {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+dialog h3.sect ~ h3.sect {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+  margin-top: 4px;
+}
+
+dialog .table.preview {
+  flex: none;
+  min-height: 0;
+  margin-bottom: 12px;
+}
+
+.preview td.will {
+  font-weight: 700;
+}
+
+.preview tr.bad td {
+  color: var(--red);
+}
+
+.preview td.why,
+.preview th.why {
+  width: 100%;
+  white-space: normal;
+  min-width: 9rem;
+}
+
+.preview tbody tr {
+  cursor: default;
+}
+
+.preview tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+dl.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 18px;
+  margin: 0 0 16px;
+}
+
+dl.facts dt {
+  color: var(--muted);
+}
+
+dl.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+dd.bad {
+  color: var(--red);
+}
+
+dialog .copyrow {
+  margin: 0 0 12px;
+}
+
+/* Half a screen: the button rows wrap, the count goes under them and Joined leaves the tables */
+@media (max-width: 720px) {
+  body.cards {
+    padding: 32px 16px;
+  }
+
+  .top,
+  .work,
+  .status {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .menu {
+    inset: 52px 16px auto auto;
+  }
+
+  .select .count {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+
+  .joined {
+    display: none;
+  }
+
+  /* The page scrolls rather than the table, which shows every phone */
+  .table {
+    flex: none;
+    min-height: 0;
+  }
+
+  dialog {
+    margin-top: 16px;
+    max-height: calc(100vh - 32px);
+  }
+
+  dialog header,
+  dialog .body,
+  dialog footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .inline .grow {
+    flex: 1 1 auto;
+  }
+
+  dialog footer .check {
+    flex-basis: 100%;
+  }
+}
+
+/* A phone's width: Callsign and Certificate stay readable without scrolling sideways */
+@media (max-width: 480px) {
+  .phone,
+  .picker small {
+    display: none;
+  }
+
+  .card {
+    padding: 20px 16px;
+  }
+
+  .inline .num {
+    flex-basis: 7.5rem;
+  }
+
+  th,
+  td {
+    padding: 8px;
+  }
+
+  td.cert {
+    min-width: 0;
+  }
+
+  dialog footer .main,
+  dialog footer .second {
+    flex: 1 1 auto;
+  }
+
+  dl.facts {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  dl.facts dd {
+    margin-bottom: 10px;
+  }
+
+  /* The sentence keeps the width, and when the phones were listed goes under it */
+  .status {
+    flex-direction: column;
+    gap: 4px;
+  }
+}
