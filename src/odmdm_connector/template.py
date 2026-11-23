@@ -33,10 +33,11 @@ class TemplateError(ValueError):
     """The document is not something we can act on"""
 
 
-#: The callsign as the common name, from the name the operator gives the phone, and optionally the
-#: MDM's own device id beside it. Anything the phone or the enrolment link supplies, a serial
-#: number for one, would let whoever holds a leaked enrolment link pick an identity.
-SUBJECT = re.compile(r"CN=\$FLEET_VAR_HOST_END_USER_IDP_USERNAME(_LOCAL_PART)?(\s*,\s*OU=\$FLEET_VAR_HOST_UUID)?")
+#: The callsign as the common name, from the name the operator gives the phone, and nothing else:
+#: the deployment refuses a request whose subject holds more. Anything the phone or the enrolment
+#: link supplies, a serial number for one, would let whoever holds a leaked enrolment link pick
+#: an identity.
+SUBJECT = re.compile(r"CN=\$FLEET_VAR_HOST_END_USER_IDP_USERNAME(_LOCAL_PART)?")
 
 
 def _unsafe(policy: dict[str, Any], certificate: dict[str, Any] | None) -> str:
@@ -46,8 +47,8 @@ def _unsafe(policy: dict[str, Any], certificate: dict[str, Any] | None) -> str:
     """
     if certificate is not None and not SUBJECT.fullmatch(str(certificate.get("subject", ""))):
         return (
-            "the certificate subject must be CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART, optionally "
-            "followed by OU=$FLEET_VAR_HOST_UUID, so the callsign is the name the operator gave the phone"
+            "the certificate subject must be CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART and nothing "
+            "else, so the callsign is the name the operator gave the phone and the deployment takes the request"
         )
     rules = policy.get("choosePrivateKeyRules", [])
     if not isinstance(rules, list):
