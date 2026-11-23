@@ -923,7 +923,7 @@ wheels = [
 
 [[package]]
 name = "odmdm-connector"
-version = "1.6.0+261123"
+version = "1.7.0+261123"
 source = { editable = "." }
 dependencies = [
     { name = "keyring" },
