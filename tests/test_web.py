@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from odmdm_connector import app, browser, console, store, web
-from odmdm_connector.mdm import ASK_AGAIN, SEND_POLICY, State, Step
+from odmdm_connector.mdm import ASK_AGAIN, END, SEND_POLICY, State, Step
 from odmdm_connector.settings import Settings
 from odmdm_connector.testing import FakeMdm
 
@@ -1050,3 +1050,66 @@ def test_the_team_card_suggests_the_deployments_team(served: Served) -> None:
         "golden-monkey DeployApp",
         True,
     )
+
+
+def test_removing_with_end_ends_it_in_the_mdm_first(served: Served) -> None:
+    """Offered while the MDM connected can end; removed once the MDM has said what it took out"""
+    assert (served.state()["can_end"], served.state()["title"]) == (False, "")
+    served.post("/api/add", {"line": LINE})
+    served.post("/api/connect", {"mdm": "fake", "values": VALUES})
+    offered = served.state()
+
+    said = served.post("/api/remove", {"host": "unit.example.fi", "end": True})
+    state = served.state()
+
+    assert (offered["can_end"], offered["end_note"], offered["title"]) == (True, "", "Fake MDM")
+    assert said == {"said": "Ending Deploy App unit.example.fi in Fake MDM."}
+    assert state["connections"] == []
+    assert (
+        state["status"] == "Deploy App unit.example.fi is removed from this app, and its MDM token from this computer."
+    )
+    assert state["lines"] == [
+        "Group Deploy App no longer enrols at https://unit.example.fi/scep: its phones lose its certificate",
+        "Group Deploy App, its phones, their names and their apps stay",
+    ]
+
+
+def test_ending_is_refused_for_an_mdm_that_cannot(served: Served) -> None:
+    """Its note is in the state, and removing without end still removes"""
+    served.rig.classes["fake"] = FakeMdm.lacking(END)
+    served.post("/api/add", {"line": LINE})
+    served.post("/api/connect", {"mdm": "fake", "values": VALUES})
+    state = served.state()
+
+    assert (state["can_end"], state["end_note"]) == (False, "The fake MDM cannot end")
+    assert served.post("/api/remove", {"host": "unit.example.fi", "end": True}, status=400) == {
+        "error": "The fake MDM cannot end"
+    }
+    assert served.post("/api/remove", {"host": "unit.example.fi", "end": "yes"}, status=400) == {
+        "error": "The page sent end as something other than yes or no."
+    }
+    assert served.post("/api/remove", {"host": "unit.example.fi", "end": False})["said"].startswith(
+        "Deploy App unit.example.fi is removed from this app"
+    )
+
+
+def test_the_state_says_while_the_active_deploy_app_is_being_ended(served: Served) -> None:
+    """The page disables what would send more to the MDM for it"""
+    go = threading.Event()
+
+    class Slow(FakeMdm):
+        def end(self, window: Settings) -> list[str]:
+            go.wait(5)
+            return super().end(window)
+
+    served.rig.classes["fake"] = Slow
+    served.post("/api/add", {"line": LINE})
+    served.post("/api/connect", {"mdm": "fake", "values": VALUES})
+    assert served.state()["ending"] is False
+
+    served.post("/api/remove", {"host": "unit.example.fi", "end": True})
+    running = json.loads(served.request("GET", "/api/state")[2])
+    go.set()
+
+    assert (running["ending"], "end" in running["busy"]) == (True, True)
+    assert served.state()["connections"] == []

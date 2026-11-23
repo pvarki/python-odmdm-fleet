@@ -15,6 +15,8 @@ let S = null; // the last state
 let screen = ""; // a card's name, or "app" for the phones
 let problem = ""; // the last refusal, shown in the view
 let notice = ""; // the last answer's sentence, shown on the next card
+let told = []; // the MDM's lines said before notice, once a Deploy App was ended in it
+let ending = ""; // the Deploy App being ended in its MDM, until that is done
 let timer = 0;
 let selected = new Set(); // the phones ticked in the table, by id
 let settling = false; // the table is from before a naming or an asking again
@@ -147,6 +149,7 @@ async function act(path, body, then, fail = say) {
     return;
   }
   notice = answer.said || "";
+  told = [];
   if (await refresh(false)) then(answer);
 }
 
@@ -177,6 +180,14 @@ async function refresh(redraw = true) {
   const moved =
     before && (S.active !== before.active || S.connected !== before.connected || S.connections.length > before.connections.length);
   if (settling && !S.busy.some((job) => SETTLING.includes(job))) settling = false;
+  // Ended in its MDM and so removed: what the MDM said and the removal go with the card that follows
+  if (ending && !S.busy.includes("end")) {
+    if (!S.connections.some((each) => each.host === ending)) {
+      notice = S.status;
+      told = S.lines;
+    }
+    ending = "";
+  }
   if (!screen || screen === "away") begin();
   else if (!redraw) return true;
   else if (screen === "app" && !S.connected) {
@@ -217,6 +228,7 @@ function show(name) {
 
 function go(name) {
   notice = "";
+  told = [];
   show(name);
 }
 
@@ -295,6 +307,7 @@ function frame({ parts, step = null, back = null, corner = "", host = false }) {
 
 function begin() {
   problem = notice = "";
+  told = [];
   if (!arriving) return home();
   closeOverlays();
   const { line, from } = arriving;
@@ -429,6 +442,7 @@ const CARDS = {
       back: S.connections.length ? { text: "Back", action: flow.back || home } : null,
       parts: [
         h1(renew ? ["New settings for Deploy App ", named(S.active)] : "Add your Deploy App"),
+        told.map((line) => el("p", { class: "muted" }, line)),
         notice ? el("p", { class: "muted" }, notice) : null,
         lead("On Deploy App's MDM page, press this button:"),
         // A picture of Deploy App's button, which the sentence above names: nothing to press here
@@ -483,6 +497,7 @@ const CARDS = {
     return {
       parts: [
         h1("Which Deploy App?"),
+        told.map((line) => el("p", { class: "muted" }, line)),
         notice ? lead(notice) : null,
         S.connections.map((each) =>
           choice(each.host, each.short, () => act("/api/open", { host: each.host }, home), each.level),
@@ -779,11 +794,11 @@ function phones() {
           el(
             "div",
             { class: "tools" },
-            main("Give callsigns", () => giveCallsigns([...selected]), settling || !(selected.size || waiting), "tool go"),
-            tool("Ask again", () => askAgain([...selected]), settling || !askable),
+            main("Give callsigns", () => giveCallsigns([...selected]), settling || S.ending || !(selected.size || waiting), "tool go"),
+            tool("Ask again", () => askAgain([...selected]), settling || S.ending || !askable),
             tool("Details", () => detail([...selected][0]), settling || selected.size !== 1),
             tool("Refresh", () => act("/api/refresh", {}, () => draw(false))),
-            tool("New settings", () => adding(true)),
+            tool("New settings", () => adding(true), S.ending),
             tool("Settings", settings, false, "push"),
           ),
           el(
@@ -928,13 +943,17 @@ function detail(id) {
     };
     const foot = phone.can_ask_again
       ? [
-          second(give, giving),
-          main("Ask again", () => {
-            dialog.close();
-            askAgain([phone.id]);
-          }),
+          second(give, giving, S.ending),
+          main(
+            "Ask again",
+            () => {
+              dialog.close();
+              askAgain([phone.id]);
+            },
+            S.ending,
+          ),
         ]
-      : [main(give, giving)];
+      : [main(give, giving, S.ending)];
     open(
       phone.callsign || `Phone ${phone.id}`,
       [
@@ -1174,8 +1193,8 @@ function settings() {
           { class: "facts" },
           answer.fields.filter((each) => said(each)).map((each) => [el("dt", {}, each.label), el("dd", {}, said(each))]),
         ),
-        second(`Change the ${answer.title} settings`, change),
-        S.policy ? [el("h3", { class: "sect" }, "Policy"), el("p", { class: "muted" }, S.policy), second("Send the policy again", resend, S.busy.includes("policy") || S.busy.includes("setup"))] : null,
+        second(`Change the ${answer.title} settings`, change, S.ending),
+        S.policy ? [el("h3", { class: "sect" }, "Policy"), el("p", { class: "muted" }, S.policy), second("Send the policy again", resend, S.ending || S.busy.includes("policy") || S.busy.includes("setup"))] : null,
         el("h3", { class: "sect" }, "Log"),
         el("div", { class: "copyrow" }, copyable(S.log, "Log"), tool("Copy", () => copy(S.log))),
         el("p", { class: "muted" }, `odmdm-connector ${S.version}`),
@@ -1185,28 +1204,51 @@ function settings() {
   });
 }
 
+// Removing forgets the Deploy App here; ticked, where the MDM can, it is ended in the MDM first
 function remove() {
   const host = S.active;
+  const title = S.title;
+  const n = S.rows.length;
+  let end = false;
   submit = null;
-  const removing = () =>
+  const removing = () => {
+    // Set before asking, as the MDM may be done by the time the answer comes
+    if (end) ending = host;
     act(
       "/api/remove",
-      { host },
+      { host, end },
       () => {
         dialog.close();
         home();
       },
       (text) => tell(text),
     );
+  };
+  const forgets = "The connector forgets this Deploy App and its MDM token on this computer. Nothing changes in Deploy App, the MDM or the phones.";
+  const loses =
+    n === 0
+      ? `It has no phones in ${title} now. This cannot be undone.`
+      : n === 1
+        ? `Its phone loses this Deploy App's certificate. This cannot be undone. The phone stays in ${title} with its name and apps.`
+        : `Its ${n} phones lose this Deploy App's certificate. This cannot be undone. The phones stay in ${title} with their names and apps.`;
+  const said = el("p", {}, forgets);
   const button = main("Remove", removing, false, "danger");
+  const tick = (on) => {
+    end = on;
+    said.textContent = on ? loses : forgets;
+    button.textContent = on ? "End and remove" : "Remove";
+  };
+  const also = S.can_end ? check(`Also end it in ${title}`, false, tick) : null;
+  // Enter on a checkbox submits its form: only the button ends a Deploy App, never a stray Enter
+  also?.querySelector("input").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") event.preventDefault();
+  });
   const tell = open(
     ["Remove Deploy App ", named(host, "?")],
     [
-      el(
-        "p",
-        {},
-        "The connector forgets this Deploy App and its MDM token on this computer. Nothing changes in Deploy App, the MDM or the phones.",
-      ),
+      also,
+      said,
+      !S.can_end && S.mdm && S.end_note ? el("p", { class: "note" }, S.end_note) : null,
     ],
     [cancel(() => dialog.close()), button],
   );
