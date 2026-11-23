@@ -22,7 +22,7 @@ from odmdm_connector import __version__
 
 from . import browser, core, plugins, settings, store, web
 from .app import App
-from .mdm import ASK_AGAIN, SEND_POLICY, SET_CHALLENGE, SETUP, Field, Mdm, MdmError
+from .mdm import ASK_AGAIN, END, SEND_POLICY, SET_CHALLENGE, SETUP, Field, Mdm, MdmError, cannot_end
 from .settings import Settings
 
 #: Said when ODMDM_LOG_LEVEL is not a number
@@ -163,8 +163,9 @@ def _mdm(args: argparse.Namespace, *capabilities: str, complete: bool = True) ->
     given = {key: setting for key, _, setting in (value.partition("=") for value in args.given)}
     chosen = _chosen(args.chosen)
     for capability in capabilities:
-        if capability in chosen.missing:
-            raise _Failed(chosen.missing[capability])
+        why = cannot_end(chosen) if capability == END else chosen.missing.get(capability, "")
+        if why:
+            raise _Failed(why)
     for key in ("mdm_url", "team", "template"):
         if getattr(args, key, None) is not None:
             given[key] = getattr(args, key)
@@ -352,6 +353,36 @@ def resend(args: argparse.Namespace) -> int:
     return 0
 
 
+def end(args: argparse.Namespace) -> int:
+    """Take this Deploy App out of the MDM once its deployment is over
+
+    The team's phones lose this Deploy App's certificate at their next check-in, within about 15
+    minutes. The team, its phones, their names and their apps stay, so the next Deploy App can be
+    connected to the same team. No challenge is needed. Without --yes nothing is changed: it says
+    how many phones would lose the certificate.
+    """
+    the_domain = _domain(args)
+    mdm = _mdm(args, END)
+    try:
+        if not args.yes:
+            found = len(mdm.phones())
+            would = (
+                "The team has no phones"
+                if not found
+                else f"{found} phone{'' if found == 1 else 's'} in the team would lose this Deploy App's certificate"
+            )
+            print(f"{would}. Nothing was changed: give --yes to end {the_domain} in {mdm.title}")
+            return 0
+        lines = mdm.end(Settings(f"https://{the_domain}/scep", ""))
+    except MdmError as exc:
+        for line in exc.lines:
+            print(line)
+        raise _Failed(str(exc)) from exc
+    for line in lines:
+        print(line)
+    return 0
+
+
 def mdms(args: argparse.Namespace) -> int:
     """List the MDMs installed: the name --mdm takes, the package and its version, built in or a plugin
 
@@ -505,6 +536,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     sub = command("resend", resend, "--mdm-url", "--team")
     sub.add_argument("ids", nargs="*", metavar="ID")
+    sub = command("end", end, "--mdm-url", "--team", "--domain")
+    sub.add_argument("--yes", action="store_true", help="End it: without, nothing is changed")
     command("mdms", mdms)
     sub = command("web", page)
     sub.set_defaults(alone=False)

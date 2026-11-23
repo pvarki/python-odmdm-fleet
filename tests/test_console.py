@@ -975,6 +975,7 @@ def test_a_token_file_that_cannot_be_read_as_text_is_said_without_the_token(
         (["apply"], "setup"),
         (["resend"], "ask_again"),
         (["apply", "--force-policy"], "send_policy"),
+        (["end", "--yes"], "end"),
     ],
 )
 def test_a_capability_the_mdm_lacks_is_its_sentence(
@@ -1183,3 +1184,90 @@ def test_the_default_team_reaches_fleet(fleet: _Fleet, monkeypatch: pytest.Monke
     assert ("teams" in str(fleet.calls), named.exit_code) == (True, 1)
     assert "golden-monkey DeployApp" in named.stderr, "the team asked for, which the stub does not hold"
     assert (unnamed.exit_code, unnamed.stderr) == (1, "Team is missing: give --set team=... or set ODMDM_TEAM\n")
+
+
+def _writes(fleet: _Fleet) -> list[tuple[str, str]]:
+    return [call for call in fleet.calls if call[0] != "GET"]
+
+
+@pytest.mark.parametrize(
+    ("hosts", "says"),
+    [
+        (2, "2 phones in the team would lose this Deploy App's certificate"),
+        (1, "1 phone in the team would lose this Deploy App's certificate"),
+        (0, "The team has no phones"),
+    ],
+)
+def test_end_without_yes_changes_nothing(
+    fleet: _Fleet, monkeypatch: pytest.MonkeyPatch, run: Run, hosts: int, says: str
+) -> None:
+    """It says how many phones would lose the certificate; no challenge is asked for"""
+    fleet.hosts = [_host(31 + n) for n in range(hosts)]
+    monkeypatch.delenv("ODMDM_CHALLENGE", raising=False)
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: pytest.fail("end asks for no challenge"))
+
+    result = run(["end", "--domain", "example.fi"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == f"{says}. Nothing was changed: give --yes to end example.fi in Fleet\n"
+    assert not _writes(fleet)
+
+
+def test_end_with_yes_prints_what_fleet_took_out(fleet: _Fleet, run: Run) -> None:
+    fleet.hosts = [_host(31, "verified", "OTTER1")]
+
+    result = run(["end", "--domain", "example.fi", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines() == [
+        (
+            "Certificate template rmscep is removed from team rmscep: its phone loses this Deploy App's certificate "
+            "at its next check-in, up to 15 minutes."
+        ),
+        "Certificate authority RMSCEP is removed from Fleet.",
+        "The team, its phones, their names and their apps stay.",
+    ]
+    assert _writes(fleet) == [
+        ("DELETE", "/api/latest/fleet/certificates/81"),
+        ("DELETE", "/api/latest/fleet/certificate_authorities/3"),
+    ]
+
+
+def test_end_for_a_team_fleet_lacks_changes_nothing(fleet: _Fleet, run: Run) -> None:
+    result = run(["end", "--domain", "example.fi", "--team", "golden-monkey DeployApp", "--yes"])
+
+    assert result.exit_code == 1
+    assert result.stderr == (
+        "Fleet has no team named golden-monkey DeployApp, so nothing was changed. Check the team's name.\n"
+    )
+    assert not _writes(fleet)
+
+
+def test_an_end_stopped_half_way_says_what_was_taken_out(fleet: _Fleet, run: Run) -> None:
+    answer = fleet.handler
+
+    def refusing(request: Request) -> Response:
+        if request.method == "DELETE" and "/certificate_authorities/" in request.url.path:
+            return Response(500, text="database is locked")
+        return answer(request)
+
+    fleet.handler = refusing  # type: ignore[method-assign]
+
+    result = run(["end", "--domain", "example.fi", "--yes"])
+
+    assert result.exit_code == 1
+    assert result.stdout == "Certificate template rmscep is removed from team rmscep, which has no phones.\n"
+    assert result.stderr.startswith("Fleet refused: DELETE /api/latest/fleet/certificate_authorities/3 answered 500")
+
+
+def test_an_mdm_plugin_older_than_end_says_so(fleet: _Fleet, monkeypatch: pytest.MonkeyPatch, run: Run) -> None:
+    """It has no end to call, and does not list END in missing"""
+    monkeypatch.delattr(FleetPlugin, "end")
+
+    result = run(["end", "--domain", "example.fi", "--yes"])
+
+    assert result.exit_code == 1
+    assert (
+        result.stderr == "This Fleet plugin cannot end a Deploy App in Fleet: it was made before the connector could.\n"
+    )
+    assert not fleet.calls
