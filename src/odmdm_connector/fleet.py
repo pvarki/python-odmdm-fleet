@@ -35,6 +35,11 @@ def _same_case(url: str) -> str:
     return parts._replace(scheme=parts.scheme.lower(), netloc=parts.netloc.lower()).geturl()
 
 
+def same_address(one: str, other: str) -> bool:
+    """Whether two addresses are one, their scheme and host compared without case"""
+    return _same_case(one) == _same_case(other)
+
+
 class FleetError(RuntimeError):
     """Fleet refused, or answered something we cannot use"""
 

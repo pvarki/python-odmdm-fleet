@@ -274,3 +274,151 @@ def test_setup_with_force_sends_the_unchanged_policy_again_and_no_challenge(flee
     assert _policy_uploads(fleet) == before + 1
     assert steps[-1].label.startswith("Applied to team rmscep (7): ")
     assert fleet.authorities[0]["challenge"] == "old"
+
+
+#: The Deploy App the stub's authority serves; ending takes no challenge
+ENDED = Settings("https://deployment.test/scep", "")
+KEPT = "The team, its phones, their names and their apps stay."
+
+
+def _ending(**values: str) -> FleetPlugin:
+    """The plugin itself: until the contract has end, an Mdm does not"""
+    return FleetPlugin({"mdm_url": "https://mdm.test", "token": "token", "team": "rmscep", **values})
+
+
+def _changes(fleet: _Fleet) -> list[tuple[str, str]]:
+    return [call for call in fleet.calls if call[0] != "GET"]
+
+
+def test_ending_removes_the_template_and_then_the_authority(fleet: _Fleet) -> None:
+    """Only those two: the team, its hosts, its policy and its apps stay"""
+    fleet.hosts = [_host(31, "verified", "OTTER1"), _host(32)]
+
+    lines = _ending().end(ENDED)
+
+    assert lines == [
+        (
+            "Certificate template rmscep is removed from team rmscep: its 2 phones lose this Deploy App's certificate "
+            "at their next check-in, up to 15 minutes."
+        ),
+        "Certificate authority RMSCEP is removed from Fleet.",
+        KEPT,
+    ]
+    assert _changes(fleet) == [
+        ("DELETE", "/api/latest/fleet/certificates/81"),
+        ("DELETE", "/api/latest/fleet/certificate_authorities/3"),
+    ]
+    assert not fleet.certificates and not fleet.authorities
+    assert [host["id"] for host in fleet.hosts] == [31, 32] and fleet.teams == [{"id": 7, "name": "rmscep"}]
+
+
+@pytest.mark.parametrize(
+    ("hosts", "said"),
+    [
+        (1, ": its phone loses this Deploy App's certificate at its next check-in, up to 15 minutes."),
+        (0, ", which has no phones."),
+    ],
+)
+def test_ending_says_how_many_phones_lose_the_certificate(fleet: _Fleet, hosts: int, said: str) -> None:
+    fleet.hosts = [_host(31 + n) for n in range(hosts)]
+
+    assert _ending().end(ENDED)[0] == f"Certificate template rmscep is removed from team rmscep{said}"
+
+
+def test_an_authority_another_team_still_uses_stays(fleet: _Fleet) -> None:
+    """Fleet's conflict is a line for the operator, not a failure"""
+    fleet.certificates = [
+        {"id": 81, "name": "rmscep", "team_id": 7, "subject_name": "CN=$X", "certificate_authority_id": 3},
+        {"id": 90, "name": "rmscep", "team_id": 8, "subject_name": "CN=$X", "certificate_authority_id": 3},
+    ]
+
+    lines = _ending().end(ENDED)
+
+    assert lines[1:] == [
+        "Certificate authority RMSCEP stays in Fleet: another team's certificate template still uses it.",
+        KEPT,
+    ]
+    assert [c["id"] for c in fleet.certificates] == [90] and [a["id"] for a in fleet.authorities] == [3]
+
+
+def test_ending_again_finishes_what_an_earlier_call_left(fleet: _Fleet) -> None:
+    """The template gone already, the authority that serves this Deploy App is found by its address"""
+    fleet.certificates = []
+    fleet.authorities = [
+        {"id": 3, "name": "ODMDM_OTHER", "url": "https://other.test/scep"},
+        {"id": 4, "name": "ODMDM_DEPLOYMENT", "url": "https://deployment.test/scep"},
+    ]
+
+    lines = _ending().end(ENDED)
+
+    assert lines == [
+        "Team rmscep has no certificate template rmscep: there was nothing to remove from it.",
+        "Certificate authority ODMDM_DEPLOYMENT is removed from Fleet.",
+        KEPT,
+    ]
+    assert [a["id"] for a in fleet.authorities] == [3], "another Deploy App's authority stays"
+
+
+def test_ending_when_nothing_is_left_says_so(fleet: _Fleet) -> None:
+    fleet.certificates = []
+    fleet.authorities = [{"id": 3, "name": "ODMDM_OTHER", "url": "https://other.test/scep"}]
+
+    assert _ending().end(ENDED) == [
+        "Team rmscep has no certificate template rmscep: there was nothing to remove from it.",
+        KEPT,
+    ]
+    assert not _changes(fleet)
+
+
+def test_ending_without_the_team_changes_nothing(fleet: _Fleet) -> None:
+    with pytest.raises(MdmError) as raised:
+        _ending(team="golden-monkey DeployApp").end(ENDED)
+
+    assert str(raised.value) == (
+        "Fleet has no team named golden-monkey DeployApp, so nothing was changed. Check the team's name."
+    )
+    assert not _changes(fleet)
+
+
+def test_a_team_bound_to_another_deploy_apps_authority_is_left_as_it_is(fleet: _Fleet) -> None:
+    """Its phones take their certificates from another Deploy App, so removing the template would end that one"""
+    with pytest.raises(MdmError) as raised:
+        _ending().end(Settings("https://golden-monkey.example.fi/scep", ""))
+
+    assert str(raised.value) == (
+        "Team rmscep takes its certificates from authority RMSCEP, which serves https://deployment.test/scep, not "
+        "https://golden-monkey.example.fi/scep, so nothing was changed. Check the team's name."
+    )
+    assert not _changes(fleet)
+
+
+def test_a_refusal_half_way_carries_the_lines_already_due(fleet: _Fleet) -> None:
+    """The template is gone, so the operator learns it; ending again finishes the rest"""
+    answer = fleet.handler
+
+    def refusing(request: Request) -> Response:
+        if request.method == "DELETE" and "/certificate_authorities/" in request.url.path:
+            return Response(500, text="database is locked")
+        return answer(request)
+
+    fleet.handler = refusing  # type: ignore[method-assign]
+
+    with pytest.raises(MdmError) as raised:
+        _ending().end(ENDED)
+
+    assert str(raised.value).startswith(
+        "Fleet refused: DELETE /api/latest/fleet/certificate_authorities/3 answered 500"
+    )
+    assert raised.value.lines == [
+        "Certificate template rmscep is removed from team rmscep, which has no phones.",
+    ]
+    assert not raised.value.unauthorized
+
+
+def test_a_token_refused_while_ending_is_said_as_such(fleet: _Fleet) -> None:
+    fleet.handler = lambda request: Response(401, json={"message": "Authentication required"})  # type: ignore[method-assign]
+
+    with pytest.raises(MdmError) as raised:
+        _ending().end(ENDED)
+
+    assert raised.value.unauthorized
