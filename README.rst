@@ -39,7 +39,7 @@ An MDM fits, for managed Android phones, if an operator can do five things in it
 2. Send each phone's certificate request to Deploy App's SCEP URL with one challenge, the same
    for every phone of an enrolment window.
 3. Put a value that can be set for each phone into the certificate subject: the callsign, as the
-   common name.
+   common name, and nothing else.
 4. Take a new challenge for each enrolment window.
 5. Ask one phone for its certificate again and leave the others alone.
 
@@ -555,17 +555,15 @@ a deployment installs, and give your copy as the template.
 
 The certificate subject is the contract with the deployment. Its common name becomes the callsign:
 3 to 32 letters, digits or hyphens, no hyphen at either end. It is the name ``name`` gives the
-phone, optionally followed by Fleet's id for the host::
+phone, and the subject holds nothing else::
 
-    CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART, OU=$FLEET_VAR_HOST_UUID
     CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART
 
 The tool refuses any other subject; it takes ``$FLEET_VAR_HOST_END_USER_IDP_USERNAME`` in place of
-the ``_LOCAL_PART`` form, which is the same text for a callsign. The shipped template uses the
-first: the id travels in the certificate request, so the deployment can tell later which device a
-callsign was issued to. A subject cannot change on a team that has phones, since replacing the
-certificate template removes every phone's certificate, so a team set up without the id keeps the
-second form in a template of its own.
+the ``_LOCAL_PART`` form, which is the same text for a callsign. Deploy App refuses a request
+whose subject holds more than the callsign. Version 1.5 put Fleet's id for the host after it, as
+``OU``: a team set up that way needs a new team, because a subject cannot change on a team that
+has phones, since replacing the certificate template removes every phone's certificate.
 
 A name the phone supplies, such as its serial number, would make a leaked enrolment link enough
 for an identity.

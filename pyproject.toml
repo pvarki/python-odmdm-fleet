@@ -1,6 +1,6 @@
 [project]
 name = "odmdm-connector"
-version = "1.5.0+261122"
+version = "1.6.0+261123"
 description = "Connects an MDM, FleetDM built in, to an OpenDefence deployment's SCEP device enrolment"
 authors = [
     { name = "Benjam", email = "benjam@opendefence.fi" },

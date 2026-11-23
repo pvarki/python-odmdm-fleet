@@ -81,8 +81,6 @@ def _with(policy: dict[str, object] | None = None, subject: str = NAMED) -> dict
     [
         NAMED,
         "CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME",
-        "CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME_LOCAL_PART, OU=$FLEET_VAR_HOST_UUID",
-        "CN=$FLEET_VAR_HOST_END_USER_IDP_USERNAME,OU=$FLEET_VAR_HOST_UUID",
     ],
 )
 def test_the_callsign_is_the_name_the_operator_gave(tmp_path: Path, subject: str) -> None:
@@ -96,6 +94,7 @@ def test_the_callsign_is_the_name_the_operator_gave(tmp_path: Path, subject: str
         (_with(subject="CN=$FLEET_VAR_HOST_HARDWARE_SERIAL"), "certificate subject must be CN="),
         (_with(subject="CN=OTTER1"), "certificate subject must be CN="),
         (_with(subject=NAMED + ", OU=$FLEET_VAR_HOST_HARDWARE_SERIAL"), "certificate subject must be CN="),
+        (_with(subject=NAMED + ", OU=$FLEET_VAR_HOST_UUID"), "certificate subject must be CN="),
         (_with(subject="OU=$FLEET_VAR_HOST_UUID, " + NAMED), "certificate subject must be CN="),
         (
             _with({"choosePrivateKeyRules": [{"urlPattern": "x", "privateKeyAlias": "rmscep"}]}),
@@ -194,9 +193,9 @@ def test_a_template_may_name_its_authority(tmp_path: Path) -> None:
     assert template.certificate is not None and template.certificate.authority == "RMSCEP"
 
 
-def test_the_shipped_subject_carries_the_device_id() -> None:
-    """A subject cannot change once a team has phones, so the id is there from the first template"""
+def test_the_shipped_subject_is_the_callsign_alone() -> None:
+    """The deployment refuses a request whose subject holds more than the callsign"""
     template = load(EXAMPLE, domain="example.fi", key_alias="rmscep")
 
     assert template.certificate is not None
-    assert template.certificate.subject == f"{NAMED}, OU=$FLEET_VAR_HOST_UUID"
+    assert template.certificate.subject == NAMED
