@@ -177,6 +177,14 @@ A certificate authority is the exception: it is known by the address it serves, 
 its teams' phones would enrol into another Deploy App. Fleet keeps an authority while a certificate
 template is bound to it (a foreign key without ON DELETE in Fleet 4.90.1's schema).
 
+Ending a Deploy App makes the only two deletions there are, `FleetMdm.delete_certificate` and
+`delete_authority`, measured on a live Fleet 4.90.1: deleting a team's certificate template is
+answered 2xx, and Fleet's console says of it that it removes the certificate from all hosts of the
+team; deleting an authority is answered 2xx once no template is bound to it, and 409 with
+"Certificate templates still reference it" while one of any team is. An authority is deleted only
+after its address is compared with this Deploy App's, and a team whose template is bound to an
+authority of another address is left alone: never loosen either.
+
 ## Commands
 
 - Setup: `uv sync`

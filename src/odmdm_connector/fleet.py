@@ -121,6 +121,9 @@ AUTHORITY_PREFIX = "ODMDM_"
 #: The one name the shipped template gave every Deploy App's authority before each had its own.
 #: An authority is found by the address it serves, so one of this name is still its Deploy App's.
 LEGACY_AUTHORITY = "RMSCEP"
+#: What Fleet says, with a 409, when it keeps an authority because a certificate template is still bound to
+#: it (measured against a live Fleet 4.90.1; in its source, server/datastore/mysql/certificate_authorities.go)
+IN_USE = "Certificate templates still reference it"
 
 
 def authority_name(scep_url: str) -> str:
@@ -470,6 +473,44 @@ class FleetMdm:
                 return int(template.get("certificate_authority_id", 0))
         return None
 
+    def authority(self, authority_id: int) -> tuple[str, str]:
+        """An authority's name and the address it serves"""
+        held = self._authority(authority_id)
+        return str(held.get("name") or ""), str(held.get("url") or "")
+
+    def authority_serving(self, scep_url: str) -> tuple[int, str] | None:
+        """The custom SCEP proxy that serves scep_url, by its id and name; None when Fleet has none"""
+        for listed in self._authorities():
+            if listed.get("type", "custom_scep_proxy") != "custom_scep_proxy":
+                continue
+            authority_id = int(listed["id"])
+            if _same_case(self.authority(authority_id)[1]) == _same_case(scep_url):
+                return authority_id, str(listed.get("name") or "")
+        return None
+
+    def delete_authority(self, authority_id: int, scep_url: str) -> bool:
+        """Delete the authority, which must serve scep_url; False when Fleet keeps it, as a template still uses it
+
+        Fleet keeps an authority while any team's certificate template is bound to it, and says so
+        with a conflict: another team, of this Deploy App or another, still takes its certificates
+        there. One that serves another address is never deleted: it is another Deploy App's.
+        """
+        name, serves = self.authority(authority_id)
+        if _same_case(serves) != _same_case(scep_url):
+            raise FleetError(
+                f"certificate authority {name} serves {serves or 'another address'}, not {scep_url}, so it was left "
+                "as it is"
+            )
+        try:
+            self._call("DELETE", f"/api/latest/fleet/certificate_authorities/{authority_id}")
+        except FleetError as exc:
+            if "answered 409" not in str(exc) or IN_USE not in str(exc):
+                raise
+            LOGGER.info("Certificate authority %s stays: a certificate template still uses it", name)
+            return False
+        LOGGER.info("Deleted certificate authority %s", name)
+        return True
+
     def _give_challenge(self, authority_id: int, name: object, scep_url: str, challenge: str) -> None:
         """Hand an authority that serves scep_url the window's challenge; without one, leave it as it is"""
         if not challenge:
@@ -581,7 +622,7 @@ class FleetMdm:
                     f"team {team}, and their names would be refused when they ask again, so the template was left "
                     "as it is. Use a new team, or empty this one first."
                 )
-            self._call("DELETE", f"/api/latest/fleet/certificates/{template['id']}?team_id={team}")
+            self.delete_certificate(team, int(template["id"]))
             LOGGER.info("Replacing certificate template %s", name)
 
         created = self._call(
@@ -632,6 +673,26 @@ class FleetMdm:
                 )
             )
         return sorted(found, key=lambda phone: (phone.enrolled, phone.id))
+
+    def team_certificate(self, team: int, name: str) -> tuple[int, int] | None:
+        """The team's certificate template of that name, by its id and its authority's; None while the team has none"""
+        for template in self._call("GET", f"/api/latest/fleet/certificates?team_id={team}").get("certificates", []):
+            if template.get("name") == name:
+                return int(template["id"]), int(template.get("certificate_authority_id", 0))
+        return None
+
+    def delete_certificate(self, team: int, template_id: int) -> None:
+        """Delete the team's certificate template: Fleet then has every host that holds its certificate remove it
+
+        Each phone removes it at its next check-in (Fleet 4.90.1's source: DeleteCertificateTemplate
+        marks it pending removal on every host that has it).
+        """
+        self._call("DELETE", f"/api/latest/fleet/certificates/{template_id}?team_id={team}")
+        LOGGER.info("Deleted certificate template %s of team %s", template_id, team)
+
+    def host_count(self, team: int) -> int:
+        """How many devices the team has"""
+        return len(self._hosts(team))
 
     def certificate_template(self, team: int, name: str) -> int:
         """The id of the team's certificate template of that name"""
