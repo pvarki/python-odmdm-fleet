@@ -176,6 +176,13 @@ class Page(ThreadingHTTPServer):
             ],
             # What sending the policy again does, empty when the MDM cannot
             "policy": app.policy_note(),
+            # The MDM connected's name as the operator knows it, empty while none is
+            "title": app.mdm.title if app.mdm else "",
+            # Whether removing the Deploy App can end it in its MDM too, and why not when it has an MDM and cannot
+            "can_end": app.can_end,
+            "end_note": app.end_note(),
+            # The active Deploy App's end waits or runs: nothing more goes to the MDM for it
+            "ending": app.ending,
             # While a setup runs, the steps it has done so far; after it, the steps its result brought
             "steps": self.steps or [asdict(step) for step in app.progress],
             "setup_error": self.setup_error,
@@ -209,7 +216,12 @@ class Page(ThreadingHTTPServer):
         return {"said": said}
 
     def remove(self, body: Body) -> Body:
-        return {"said": self.app.remove(_text(body, "host"))}
+        """Remove the Deploy App from this app; with end, end it in its MDM first, which removes it once done"""
+        end = body.get("end", False)
+        if not isinstance(end, bool):
+            raise AppError("The page sent end as something other than yes or no.")
+        host = _text(body, "host")
+        return {"said": self.app.end(host) if end else self.app.remove(host)}
 
     def form(self, body: Body) -> Body:
         """The question before a plugin is used, or the MDM's fields with their values, never a secret's"""

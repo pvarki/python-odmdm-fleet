@@ -26,7 +26,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from . import core, plugins, settings, store
-from .mdm import ASK_AGAIN, SEND_POLICY, SET_CHALLENGE, SETUP, Field, Mdm, MdmError, Phone, State, Step
+from .mdm import ASK_AGAIN, SEND_POLICY, SET_CHALLENGE, SETUP, Field, Mdm, MdmError, Phone, State, Step, cannot_end
 from .settings import Settings
 
 LOGGER = logging.getLogger(__name__)
@@ -183,6 +183,8 @@ class Job(Enum):
     ASK_AGAIN = "ask again"
     #: Setup again with the policy sent even if unchanged
     POLICY = "policy"
+    #: The Deploy App taken out of its MDM, then removed from the app
+    END = "end"
 
 
 @dataclass(frozen=True)
@@ -423,6 +425,8 @@ class App:
         #: The steps the setup under way has done so far, as the worker hands them over one by one
         self._progress: tuple[Step, ...] = ()
         self._pending = dict.fromkeys(Job, 0)
+        #: The Deploy Apps whose end waits or runs, each its own job: nothing more goes to the MDM for them
+        self._ending: set[str] = set()
         # Say at once why the MDM set up before is not connected: its secrets went with the last run
         if not self.status:
             self.status = self._take_up()
@@ -467,6 +471,11 @@ class App:
         """Let go of what is held for the active connection: its MDM, its enrolment window and its phones"""
         self.mdm = self.mdm_class = self.window = self._passed = None
         self.phones, self._listed, self._progress = [], False, ()
+
+    def _unended(self, host: str) -> None:
+        """Refuse to send anything more to the MDM for a Deploy App whose end waits or runs"""
+        if host in self._ending:
+            raise AppError(f"Deploy App {host} is being ended in its MDM, so nothing more is sent to the MDM for it.")
 
     def _say(self, sentence: str, *lines: str) -> str:
         """Say the sentence, with lines under it; what was said, the lines first"""
@@ -646,6 +655,7 @@ class App:
         chosen = self._class(name)
         if not self.saved.active:
             raise AppError("Add the Deploy App first: on its MDM page, press Open in the MDM connector.")
+        self._unended(self.saved.active)
         if self.window is None and self.conn.mdm != name:
             raise AppError(
                 f"To set {chosen.title} up, open enrolment on the MDM page of Deploy App {self.saved.active}, "
@@ -715,6 +725,7 @@ class App:
         for capability in (SETUP, SEND_POLICY):
             if capability in self.mdm.missing:
                 raise AppError(self.mdm.missing[capability])
+        self._unended(self.saved.active)
         said = f"Sending the policy again for Deploy App {self.saved.active}."
         if self._pending[Job.POLICY] or self._pending[Job.SETUP]:
             return self._say(said)
@@ -780,6 +791,50 @@ class App:
             )
         return self._say(f"Deploy App {host} is removed from this app, and its MDM token from this computer.")
 
+    def end_note(self) -> str:
+        """Why the active Deploy App cannot be ended in its MDM from here; empty when it can, or has no MDM"""
+        if not self.conn.mdm:
+            return ""
+        if self.mdm is None:
+            return "The MDM is not connected, so this Deploy App can only be removed from this app."
+        return cannot_end(self.mdm)
+
+    @property
+    def ending(self) -> bool:
+        """Whether the active Deploy App's end waits or runs"""
+        return self.saved.active in self._ending
+
+    @property
+    def can_end(self) -> bool:
+        """Whether the active Deploy App can be ended in its MDM from here"""
+        return self.mdm is not None and not cannot_end(self.mdm)
+
+    def end(self, host: str) -> str:
+        """Take the Deploy App out of its MDM on the worker, and once that is done remove it as remove does
+
+        It needs the MDM connected, which only the active Deploy App's is. The MDM is handed the
+        window held, else one made from the host, with no challenge. Ended, the MDM's lines are said
+        and then remove's sentence; failed, nothing is removed, so that it can be tried again. Asked
+        again while it waits or runs, nothing more is sent, and nothing else goes to the MDM for that
+        Deploy App until it is done. Another Deploy App's end is a job of its own.
+        """
+        if host not in self.saved.connections:
+            raise AppError(f"There is no Deploy App {host} in this app.")
+        if host != self.saved.active or self.mdm is None:
+            raise AppError(f"Connect to the MDM of Deploy App {host} first: ending it there needs the MDM connected.")
+        why = cannot_end(self.mdm)
+        if why:
+            raise AppError(why)
+        said = f"Ending Deploy App {host} in {self.mdm.title}."
+        if host in self._ending:
+            return self._say(said)
+        mdm = self.mdm
+        window = Settings(self.window.scep_url if self.window else f"https://{host}/scep", "")
+        self._ending.add(host)
+        self._submit(Job.END, lambda: Result(Job.END, lines=tuple(mdm.end(window))))
+        LOGGER.info("Ending Deploy App %s in the MDM", host)
+        return self._say(said)
+
     # The enrolment window
 
     def paste_settings(self, text: str, now: datetime.datetime, sender: str = "") -> str:
@@ -791,6 +846,7 @@ class App:
         pasted by hand; a line sent from a page other than its own Deploy App's is refused.
         """
         window, host = _read(text, now, sender)
+        self._unended(host)
         closes = window.closes.isoformat() if window.closes else ""
         connection = replace(self.saved.connections.get(host, store.Connection()), closes=closes)
         changed = self._activate(host, connection)
@@ -979,6 +1035,7 @@ class App:
         """Name the phones of the preview that passed last, on the worker"""
         if self.mdm is None:
             raise AppError("Connect to the MDM first.")
+        self._unended(self.saved.active)
         if self._passed is None or dict(names) != self._passed:
             raise AppError("Preview the callsigns first: nothing is named without a preview that passed.")
         self._passed = None
@@ -992,6 +1049,7 @@ class App:
             raise AppError("Connect to the MDM first.")
         if ASK_AGAIN in self.mdm.missing:
             raise AppError(self.mdm.missing[ASK_AGAIN])
+        self._unended(self.saved.active)
         if not ids:
             mdm = self.mdm
             self._submit(Job.ASK_AGAIN, lambda: Result(Job.ASK_AGAIN, lines=tuple(mdm.ask_again([]))))
@@ -1028,6 +1086,8 @@ class App:
             except queue.Empty:
                 return done
             self._pending[result.job] -= 1
+            if result.job is Job.END:
+                self._ending.discard(result.host)
             result = self._scrubbed(result)
             self._take(result)
             done.append(result)
@@ -1096,5 +1156,11 @@ class App:
             self._say(f"{_count(len(result.named), 'phone')} named.")
         elif result.job is Job.ASK_AGAIN:
             self._say("Asked again." if result.lines else "No phone needed asking again.")
-        if result.job in (Job.NAME, Job.ASK_AGAIN):
+        elif result.job is Job.END:
+            try:
+                removed = self.remove(result.host)
+            except AppError as exc:
+                removed = str(exc)
+            self._say(removed, *result.lines)
+        if result.job in (Job.NAME, Job.ASK_AGAIN, Job.END):
             self.lines = result.lines

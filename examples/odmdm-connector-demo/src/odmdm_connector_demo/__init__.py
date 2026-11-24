@@ -36,6 +36,8 @@ class DemoMdm:
         """refuse_after: for tests, the pretend MDM refuses to name more phones than that"""
         self.group = values.get("group", "")
         self.refuse_after = refuse_after
+        #: Whether this Deploy App was taken out of the pretend group
+        self.ended = False
         self.found = [
             Phone("d1", "", "Pretend Phone 7", "2026-11-01T09:00:00+00:00", State.NEEDS_NAME),
             Phone("d2", "", "Pretend Phone 7", "2026-11-01T09:05:00+00:00", State.NEEDS_NAME),
@@ -81,3 +83,12 @@ class DemoMdm:
         for each in again:
             self._waiting(each.id, each.callsign)
         return [f"Phone {each.id}: certificate asked for again" for each in again]
+
+    def end(self, window: Settings) -> list[str]:
+        """Take the Deploy App out of the pretend group: its phones lose the certificate and keep their names"""
+        kept = f"Group {self.group}, its phones, their names and their apps stay"
+        if self.ended:
+            return [f"Group {self.group} has nothing of {window.scep_url} left to take out", kept]
+        self.ended = True
+        self.found = [replace(each, state=State.NO_REQUEST) for each in self.found]
+        return [f"Group {self.group} no longer takes certificates from {window.scep_url}", kept]

@@ -11,7 +11,7 @@ from typing import ClassVar
 from urllib.parse import urlparse
 
 from . import template
-from .fleet import FleetError, FleetMdm, NoTeam, Unauthorized
+from .fleet import FleetError, FleetMdm, NoTeam, Unauthorized, same_address
 from .fleet import Phone as FleetPhone
 from .mdm import API_VERSION, Field, MdmError, Phone, State, Step
 from .settings import Settings
@@ -262,3 +262,63 @@ class FleetPlugin:
         except FleetError as exc:
             raise _refused(exc, lines=lines) from exc
         return lines
+
+    def end(self, window: Settings) -> list[str]:
+        """Take this Deploy App out of the team: its certificate template, then its authority if no team uses it
+
+        The team, its hosts, its policy, its apps and its launcher stay. The authority is the one
+        the template was bound to, or with no template left, the one that serves this Deploy App's
+        address, so that a call which stopped half-way is finished by the next. Fleet keeps an
+        authority another team's template still uses. A template bound to an authority of another
+        address is another Deploy App's, and nothing is changed.
+        """
+        api = self._fleet()
+        lines: list[str] = []
+        try:
+            try:
+                team = api.team_id(self.team)
+            except NoTeam as exc:
+                raise MdmError(
+                    f"Fleet has no team named {self.team}, so nothing was changed. Check the team's name."
+                ) from exc
+            found = api.team_certificate(team, self.key_alias)
+            if found is None:
+                lines.append(
+                    f"Team {self.team} has no certificate template {self.key_alias}: there was nothing to remove from it."
+                )
+                authority = api.authority_serving(window.scep_url)
+            else:
+                template_id, bound = found
+                name, serves = api.authority(bound)
+                if not same_address(serves, window.scep_url):
+                    raise MdmError(
+                        f"Team {self.team} takes its certificates from authority {name}, which serves "
+                        f"{serves or 'another address'}, not {window.scep_url}, so nothing was changed. Check the "
+                        "team's name."
+                    )
+                phones = api.host_count(team)
+                api.delete_certificate(team, template_id)
+                lines.append(_removed(self.key_alias, self.team, phones))
+                authority = (bound, name)
+            if authority is not None:
+                authority_id, name = authority
+                if api.delete_authority(authority_id, window.scep_url):
+                    lines.append(f"Certificate authority {name} is removed from Fleet.")
+                else:
+                    lines.append(
+                        f"Certificate authority {name} stays in Fleet: another team's certificate template still uses it."
+                    )
+            lines.append("The team, its phones, their names and their apps stay.")
+        except FleetError as exc:
+            raise _refused(exc, lines=lines) from exc
+        return lines
+
+
+def _removed(alias: str, team: str, phones: int) -> str:
+    """What removing the team's certificate template does to its phones"""
+    removed = f"Certificate template {alias} is removed from team {team}"
+    if not phones:
+        return f"{removed}, which has no phones."
+    lose = "its phone loses" if phones == 1 else f"its {phones} phones lose"
+    their = "its" if phones == 1 else "their"
+    return f"{removed}: {lose} this Deploy App's certificate at {their} next check-in, {CHECK_IN}."

@@ -3,6 +3,7 @@
 import datetime
 import io
 import logging
+import re
 import sys
 import threading
 import time
@@ -1507,3 +1508,233 @@ def test_a_team_saved_or_typed_stays_as_it_is(rig: Rig) -> None:
     assert rig.app.saved.connections["golden-monkey.example.fi"].values["team"] == "Deploy App"
     with pytest.raises(app.AppError, match="^Fill in Team.$"):
         rig.app.connect("fake", {"mdm_url": "https://mdm.example.fi", "token": "t0ken", "team": " "})
+
+
+class Ending(FakeMdm):
+    """Records the windows it ends, by class, so that a test sees them across a restart"""
+
+    windows: ClassVar[list[Settings]] = []
+
+    def end(self, window: Settings) -> list[str]:
+        self.windows.append(window)
+        return super().end(window)
+
+
+class EndRefused(FakeMdm):
+    """Takes the certificate out, then is refused"""
+
+    def end(self, window: Settings) -> list[str]:
+        raise MdmError("Fleet refused: the authority cannot be deleted", lines=["Certificate template removed"])
+
+
+def test_ending_takes_the_deploy_app_out_of_the_mdm_and_then_removes_it(keyed: Rig) -> None:
+    """The MDM's lines and then remove's sentence; the window held goes without its challenge"""
+    keyed.classes["fake"] = Ending
+    Ending.windows.clear()
+    keyed.connected()
+
+    assert (keyed.app.can_end, keyed.app.end_note()) == (True, "")
+    said = keyed.app.end("unit.example.fi")
+    [result] = keyed.settle()
+
+    assert said == "Ending Deploy App unit.example.fi in Fake MDM."
+    assert (result.job, result.error) == (app.Job.END, "")
+    assert Ending.windows == [Settings("https://unit.example.fi/scep", "")]
+    assert keyed.app.lines == (
+        "Group Deploy App no longer enrols at https://unit.example.fi/scep: its phones lose its certificate",
+        "Group Deploy App, its phones, their names and their apps stay",
+    )
+    assert keyed.app.status == (
+        "Deploy App unit.example.fi is removed from this app, and its MDM token from this computer."
+    )
+    assert keyed.app.saved == store.Saved()
+    assert keyed.backend is not None and keyed.backend.items == {}
+    assert not keyed.app.connected
+
+
+def test_ending_without_a_window_held_names_the_deploy_app_by_its_host(keyed: Rig) -> None:
+    """After a restart no window is held, as for sending the policy again"""
+    keyed.classes["fake"] = Ending
+    keyed.connected()
+    keyed.app.close()
+    keyed.app = keyed.start()
+    Ending.windows.clear()
+
+    keyed.app.end("unit.example.fi")
+    keyed.settle()
+
+    assert Ending.windows == [Settings("https://unit.example.fi/scep", "")]
+    assert keyed.app.saved == store.Saved()
+
+
+def test_an_end_that_fails_removes_nothing(rig: Rig) -> None:
+    """The lines already due and the refusal are said, and the operator can try again"""
+    rig.classes["fake"] = EndRefused
+    rig.connected()
+
+    rig.app.end("unit.example.fi")
+    [result] = rig.settle()
+
+    assert result.error == rig.app.status == "Fleet refused: the authority cannot be deleted"
+    assert rig.app.lines == ("Certificate template removed",)
+    assert list(rig.app.saved.connections) == ["unit.example.fi"]
+    assert rig.app.connected and rig.app.can_end
+    assert not rig.app.ending
+    rig.app.end("unit.example.fi")
+    assert rig.app.busy(app.Job.END)
+    rig.settle()
+
+
+def test_ending_is_asked_once_while_it_waits_or_runs(rig: Rig) -> None:
+    rig.classes["fake"] = Ending
+    Ending.windows.clear()
+    rig.connected()
+
+    first = rig.app.end("unit.example.fi")
+    second = rig.app.end("unit.example.fi")
+    rig.settle()
+
+    assert first == second == "Ending Deploy App unit.example.fi in Fake MDM."
+    assert len(Ending.windows) == 1
+
+
+def test_ending_hands_the_mdm_the_window_held(rig: Rig) -> None:
+    """Its SCEP URL as pasted, whatever its path"""
+    rig.classes["fake"] = Ending
+    Ending.windows.clear()
+    rig.app.paste_settings(LINE.replace("/scep ", "/enrol/scep "), NOW)
+    rig.app.connect("fake", VALUES)
+    rig.settle()
+
+    rig.app.end("unit.example.fi")
+    rig.settle()
+
+    assert Ending.windows == [Settings("https://unit.example.fi/enrol/scep", "")]
+
+
+def test_nothing_more_goes_to_the_mdm_for_a_deploy_app_being_ended(rig: Rig) -> None:
+    """Else the worker would set the MDM up again behind the end, for a Deploy App then removed"""
+    rig.connected()
+    rig.app.end("unit.example.fi")
+    refused = "^Deploy App unit.example.fi is being ended in its MDM, so nothing more is sent to the MDM for it.$"
+
+    assert rig.app.ending
+    for asked in (
+        rig.app.send_policy,
+        lambda: rig.app.connect("fake", VALUES),
+        lambda: rig.app.paste_settings(LINE, NOW),
+        lambda: rig.app.name({}),
+        lambda: rig.app.ask_again([]),
+    ):
+        with pytest.raises(app.AppError, match=refused):
+            asked()
+    results = rig.settle()
+
+    assert [result.job for result in results] == [app.Job.END]
+    assert not rig.app.ending
+    assert rig.app.saved == store.Saved()
+
+
+def test_another_deploy_app_is_ended_while_one_is(rig: Rig) -> None:
+    """Each end is a job of its own, for its own Deploy App"""
+    rig.classes["fake"] = Ending
+    Ending.windows.clear()
+    rig.connected()
+    rig.app.end("unit.example.fi")
+    rig.app.paste_settings(OTHER, NOW)
+    rig.app.connect("fake", VALUES)
+
+    assert not rig.app.ending
+    said = rig.app.end("other.example.fi")
+    assert rig.app.ending
+    results = rig.settle()
+
+    assert said == "Ending Deploy App other.example.fi in Fake MDM."
+    assert [(result.job, result.host) for result in results] == [
+        (app.Job.END, "unit.example.fi"),
+        (app.Job.SETUP, "other.example.fi"),
+        (app.Job.END, "other.example.fi"),
+    ]
+    assert Ending.windows == [
+        Settings("https://unit.example.fi/scep", ""),
+        Settings("https://other.example.fi/scep", ""),
+    ]
+    assert rig.app.saved == store.Saved()
+
+
+def test_a_deploy_app_removed_while_it_was_ended_is_said(rig: Rig) -> None:
+    """The MDM's lines are still said, beside why there was nothing left to remove"""
+    rig.connected()
+    rig.app.end("unit.example.fi")
+    rig.app.remove("unit.example.fi")
+    rig.settle()
+
+    assert rig.app.status == "There is no Deploy App unit.example.fi in this app."
+    assert rig.app.lines[0].startswith("Group Deploy App no longer enrols")
+
+
+class Older(FakeMdm):
+    """A plugin made before END was in the contract"""
+
+    end = None  # type: ignore[assignment]
+
+
+@pytest.mark.parametrize(
+    ("chosen", "says"),
+    [
+        (FakeMdm.lacking("end"), "The fake MDM cannot end"),
+        (Older, "This Fake MDM plugin cannot end a Deploy App in Fake MDM: it was made before the connector could."),
+    ],
+)
+def test_ending_is_not_offered_by_an_mdm_that_cannot(rig: Rig, chosen: type[FakeMdm], says: str) -> None:
+    rig.classes["fake"] = chosen
+    rig.connected()
+
+    assert (rig.app.can_end, rig.app.end_note()) == (False, says)
+    with pytest.raises(app.AppError, match=f"^{re.escape(says)}$"):
+        rig.app.end("unit.example.fi")
+    assert not rig.app.busy()
+    assert list(rig.app.saved.connections) == ["unit.example.fi"]
+
+
+def test_ending_needs_the_mdm_connected(rig: Rig) -> None:
+    """No MDM chosen: nothing to say; chosen but not connected in this run: why not"""
+    rig.app.paste_settings(LINE, NOW)
+    assert (rig.app.can_end, rig.app.end_note()) == (False, "")
+    with pytest.raises(app.AppError, match="^There is no Deploy App other.example.fi in this app.$"):
+        rig.app.end("other.example.fi")
+
+    rig.connected()
+    rig.app.close()
+    rig.app = rig.start()
+
+    assert rig.app.end_note() == "The MDM is not connected, so this Deploy App can only be removed from this app."
+    with pytest.raises(
+        app.AppError,
+        match="^Connect to the MDM of Deploy App unit.example.fi first: ending it there needs the MDM connected.$",
+    ):
+        rig.app.end("unit.example.fi")
+    assert list(rig.app.saved.connections) == ["unit.example.fi"]
+
+
+def test_only_the_active_deploy_app_can_be_ended(rig: Rig) -> None:
+    """Its MDM is the one held"""
+    rig.connected()
+    rig.app.paste_settings(OTHER, NOW)
+
+    with pytest.raises(app.AppError, match="^Connect to the MDM of Deploy App unit.example.fi first"):
+        rig.app.end("unit.example.fi")
+
+
+def test_a_deploy_app_not_active_is_not_ended_with_the_active_ones_mdm(rig: Rig) -> None:
+    """The MDM held, its group and its token, are the active Deploy App's"""
+    rig.connected()
+    rig.app.paste_settings(OTHER, NOW)
+    rig.app.connect("fake", VALUES)
+    rig.settle()
+
+    assert rig.app.connected
+    with pytest.raises(app.AppError, match="^Connect to the MDM of Deploy App unit.example.fi first"):
+        rig.app.end("unit.example.fi")
+    assert not rig.app.busy()
+    assert list(rig.app.saved.connections) == ["unit.example.fi", "other.example.fi"]

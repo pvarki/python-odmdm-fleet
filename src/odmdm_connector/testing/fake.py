@@ -4,7 +4,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
 from typing import ClassVar
 
-from ..mdm import API_VERSION, ASK_AGAIN, SEND_POLICY, SET_CHALLENGE, SETUP, Field, MdmError, Phone, State, Step
+from ..mdm import API_VERSION, ASK_AGAIN, END, SEND_POLICY, SET_CHALLENGE, SETUP, Field, MdmError, Phone, State, Step
 from ..settings import Settings
 
 #: The group's phones when a test gives none: two waiting for a name, one with its certificate
@@ -43,6 +43,8 @@ class FakeMdm:
         self.calls: list[str] = []
         #: The challenge last given, kept so a test can see it arrived
         self.challenge = ""
+        #: The SCEP URL of the Deploy App taken out of the group by end, empty while none was
+        self.ended = ""
 
     @classmethod
     def lacking(cls, *capabilities: str) -> type["FakeMdm"]:
@@ -107,3 +109,13 @@ class FakeMdm:
         for phone in again:
             self._waiting(phone)
         return [f"Phone {phone}: certificate asked for again" for phone in again]
+
+    def end(self, window: Settings) -> list[str]:
+        self._able(END)
+        group = self.values.get("group", "Deploy App")
+        kept = f"Group {group}, its phones, their names and their apps stay"
+        if self.ended == window.scep_url:
+            return [f"Group {group} has nothing of {window.scep_url} left to take out", kept]
+        self.ended = window.scep_url
+        self.group = [replace(each, state=State.NO_REQUEST) for each in self.group]
+        return [f"Group {group} no longer enrols at {window.scep_url}: its phones lose its certificate", kept]

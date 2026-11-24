@@ -144,6 +144,18 @@ class _Fleet:
             made = {"id": self._next_id, "name": body["name"], "url": body["url"], "challenge": body["challenge"]}
             self.authorities.append(made)
             return Response(200, json={"certificate_authority": made})
+        if "/certificate_authorities/" in path and request.method == "DELETE":
+            # Fleet keeps an authority while a certificate template is bound to it, with a conflict
+            # in its usual error body (Fleet 4.90.1's source)
+            which = int(path.rsplit("/", 1)[-1])
+            if any(c.get("certificate_authority_id") == which for c in self.certificates):
+                reason = (
+                    "Couldn't delete certificate authority. Certificate templates still reference it. "
+                    "Please remove the certificate templates first."
+                )
+                return Response(409, json={"message": "Conflict", "errors": [{"name": "base", "reason": reason}]})
+            self.authorities = [a for a in self.authorities if a["id"] != which]
+            return Response(200, json={})
         if "/certificate_authorities/" in path and request.method == "PATCH":
             which = int(path.rsplit("/", 1)[-1])
             body = json.loads(request.content)["custom_scep_proxy"]
@@ -761,6 +773,118 @@ def test_without_a_scep_url_a_template_must_name_its_authority(monkeypatch: pyte
     with pytest.raises(FleetError, match="names no certificate authority"):
         _mdm(fleet, monkeypatch).apply("rmscep", _with_cert(""))
     assert not fleet.calls
+
+
+def test_a_teams_certificate_template_is_found_by_its_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """By its id and the authority it is bound to; a team without one has none"""
+    fleet = _Fleet()
+    fleet.certificates = [
+        {"id": 80, "name": "other", "team_id": 7, "certificate_authority_id": 4},
+        {"id": 81, "name": "rmscep", "team_id": 7, "certificate_authority_id": 3},
+    ]
+    mdm = _mdm(fleet, monkeypatch)
+
+    assert mdm.team_certificate(7, "rmscep") == (81, 3)
+    assert mdm.team_certificate(8, "rmscep") is None
+
+
+def test_deleting_a_certificate_template_names_its_team(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fleet then has every phone that holds its certificate remove it"""
+    fleet = _Fleet()
+    fleet.certificates = [{"id": 81, "name": "rmscep", "team_id": 7, "certificate_authority_id": 3}]
+    seen: list[Request] = []
+
+    def answer(request: Request) -> Response:
+        seen.append(request)
+        return fleet.handler(request)
+
+    _answering(answer, monkeypatch)
+    FleetMdm("https://mdm.test", "token").delete_certificate(7, 81)
+
+    assert [(r.method, r.url.path, r.url.params) for r in seen] == [
+        ("DELETE", "/api/latest/fleet/certificates/81", {"team_id": "7"})
+    ]
+    assert not fleet.certificates
+
+
+def test_the_hosts_of_a_team_are_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+    fleet = _Fleet()
+    fleet.hosts = [_host(31), _host(32)]
+
+    assert _mdm(fleet, monkeypatch).host_count(7) == 2
+
+
+def test_the_authority_serving_an_address_is_found_by_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Its host compared without case; one of another kind, or serving another address, is not it"""
+    fleet = _Fleet()
+    fleet.authorities = [
+        {"id": 2, "name": "DIGI", "type": "digicert", "url": "https://deployment.test/scep"},
+        {"id": 3, "name": "ODMDM_OTHER", "url": "https://other.test/scep"},
+        {"id": 4, "name": "ODMDM_DEPLOYMENT", "url": "https://Deployment.TEST/scep"},
+    ]
+    mdm = _mdm(fleet, monkeypatch)
+
+    assert mdm.authority_serving("https://deployment.test/scep") == (4, "ODMDM_DEPLOYMENT")
+    assert mdm.authority_serving("https://gone.test/scep") is None
+    assert mdm.authority(3) == ("ODMDM_OTHER", "https://other.test/scep")
+
+
+def test_an_authority_is_deleted_once_no_template_uses_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    fleet = _Fleet()
+
+    assert _mdm(fleet, monkeypatch).delete_authority(3, "https://deployment.test/scep")
+
+    assert not fleet.authorities
+    assert ("DELETE", "/api/latest/fleet/certificate_authorities/3") in fleet.calls
+
+
+def test_an_authority_a_template_still_uses_stays(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fleet answers a conflict: another team still takes its certificates there"""
+    fleet = _Fleet()
+    fleet.certificates = [{"id": 90, "name": "rmscep", "team_id": 8, "certificate_authority_id": 3}]
+
+    assert not _mdm(fleet, monkeypatch).delete_authority(3, "https://deployment.test/scep")
+
+    assert [a["id"] for a in fleet.authorities] == [3]
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (409, "Locked"),
+        (500, "Couldn't delete certificate authority. Certificate templates still reference it."),
+    ],
+)
+def test_any_other_refusal_to_delete_an_authority_is_a_refusal(
+    monkeypatch: pytest.MonkeyPatch, status: int, reason: str
+) -> None:
+    """A conflict for another reason, or Fleet's words under another status, is not taken for a template that uses it"""
+    fleet = _Fleet()
+    answer = fleet.handler
+
+    def refusing(request: Request) -> Response:
+        if request.method == "DELETE":
+            return Response(status, json={"message": "Refused", "errors": [{"name": "base", "reason": reason}]})
+        return answer(request)
+
+    fleet.handler = refusing  # type: ignore[method-assign]
+
+    with pytest.raises(FleetError, match=f"answered {status}"):
+        _mdm(fleet, monkeypatch).delete_authority(3, "https://deployment.test/scep")
+
+
+def test_an_authority_serving_another_address_is_never_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It is another Deploy App's: deleting it would leave that one's phones without an authority"""
+    fleet = _Fleet()
+
+    with pytest.raises(FleetError) as raised:
+        _mdm(fleet, monkeypatch).delete_authority(3, "https://golden-monkey.example.fi/scep")
+
+    assert str(raised.value) == (
+        "certificate authority RMSCEP serves https://deployment.test/scep, not "
+        "https://golden-monkey.example.fi/scep, so it was left as it is"
+    )
+    assert not [c for c in fleet.calls if c[0] != "GET"], "nothing changed in Fleet"
 
 
 def test_applying_twice_publishes_one_web_app(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -3,6 +3,8 @@
 import pytest
 
 from odmdm_connector import mdm
+from odmdm_connector.settings import Settings
+from odmdm_connector.testing import FakeMdm
 
 
 def test_an_error_carries_the_phones_named_before_it() -> None:
@@ -20,7 +22,7 @@ def test_an_error_carries_the_phones_named_before_it() -> None:
 def test_every_state_is_a_sentence_and_every_capability_is_named() -> None:
     """The state's value is what the operator reads"""
     assert all(state.value and state.value == state.value.strip() for state in mdm.State)
-    assert set(mdm.CAPABILITIES) == {"setup", "set_challenge", "ask_again", "send_policy"}
+    assert set(mdm.CAPABILITIES) == {"setup", "set_challenge", "ask_again", "send_policy", "end"}
     assert mdm.API_VERSION == 1
 
 
@@ -54,3 +56,40 @@ def test_a_default_may_name_the_deployment() -> None:
 def test_a_deployment_default_takes_only_a_plain_host_in_lower_case(host: str, default: str) -> None:
     """The page and the command line give one team for one Deploy App; a host the settings would refuse gives none"""
     assert mdm.Field("team", "Team", default="{deployment} DeployApp").default_for(host) == default
+
+
+class _Older(FakeMdm):
+    """A plugin made before END was in the contract: no end, and END not in missing"""
+
+    end = None  # type: ignore[assignment]
+
+
+@pytest.mark.parametrize(
+    ("chosen", "says"),
+    [
+        (FakeMdm, ""),
+        (FakeMdm.lacking(mdm.END), "The fake MDM cannot end"),
+        (_Older, "This Fake MDM plugin cannot end a Deploy App in Fake MDM: it was made before the connector could."),
+    ],
+)
+def test_why_an_mdm_cannot_end(chosen: type[FakeMdm], says: str) -> None:
+    """Its own sentence when it lists END, the connector's when it is older than END; the class and an MDM alike"""
+    assert mdm.cannot_end(chosen) == says
+    assert mdm.cannot_end(chosen({})) == says
+
+
+def test_the_fake_ends_once_and_then_says_nothing_was_left() -> None:
+    """Its phones keep their names and lose the certificate; a second call finds nothing to take out"""
+    fake = FakeMdm({"group": "golden-monkey DeployApp"})
+    window = Settings("https://golden-monkey.example.fi/scep", "")
+
+    first = fake.end(window)
+    again = fake.end(window)
+
+    assert first[0].startswith(
+        "Group golden-monkey DeployApp no longer enrols at https://golden-monkey.example.fi/scep"
+    )
+    assert again[0].startswith("Group golden-monkey DeployApp has nothing of")
+    assert [phone.callsign for phone in fake.phones()] == ["", "", "OTTER1"]
+    assert {phone.state for phone in fake.phones()} == {mdm.State.NO_REQUEST}
+    assert fake.calls.count("end") == 2

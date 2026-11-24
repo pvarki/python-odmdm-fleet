@@ -155,6 +155,16 @@ this computer** on the token's card and press **Connect**; or remove the Deploy 
 removes it from the keychain. If removing the Deploy App cannot remove it from the keychain, the
 page says so: delete the ``odmdm-connector`` item of that Deploy App there by hand.
 
+Once a deployment is over, end it in the MDM as you remove it: in the Remove dialog tick **Also
+end it in Fleet**, or your MDM's name in Fleet's place, and press **End and remove**. The MDM takes
+this Deploy App's certificate from the group's phones, at their next check-in, and then the
+connector removes the Deploy App as Remove does; until then it changes nothing else in the MDM
+for that Deploy App. The group, its phones, their names and their apps stay in the MDM, and the
+next Deploy App can be connected to that group. It cannot be undone, so end a Deploy App only when
+its deployment is over. The box is there while the MDM is connected and can end a Deploy App;
+otherwise the dialog says why. If the MDM refuses on the way, nothing is removed from the
+connector, the page says what was already taken out, and ending again finishes the rest.
+
 The connector keeps what you set on the page, never the token or the challenge, in
 ``settings.json`` in its own folder, beside its log: ``%LOCALAPPDATA%\odmdm-connector`` on
 Windows, ``~/Library/Application Support/odmdm-connector`` on macOS, ``~/.config/odmdm-connector``
@@ -333,6 +343,12 @@ Close enrolment once ``phones`` says every phone has its certificate: a request 
 it closes is refused. The next opening makes a new challenge, so step 2 comes again before the
 next batch.
 
+Once the deployment is over, ``end`` takes this Deploy App out of the MDM as the page's **End and
+remove** does, but leaves the page's settings as they are, and needs no challenge. Without
+``--yes`` it changes nothing and says how many phones in the team would lose the certificate::
+
+    odmdm-connector end --yes
+
 A refusal is usually a callsign that is malformed or taken, an enrolment window that has closed,
 or an MDM that still has the previous opening's challenge. A callsign is never freed, not even by
 removing it in Deploy App: give the phone another. A phone that is renamed after it got its
@@ -356,6 +372,7 @@ Commands
     odmdm-connector name 31=OTTER4 32=OTTER5  # name these phones, and their certificates are asked for
     odmdm-connector name --all OTTER          # the same for every phone without a name, numbered
     odmdm-connector resend [ID ...]           # ask again; without ids, every named phone that failed
+    odmdm-connector end --yes                 # once the deployment is over, take it out of the MDM; without --yes, only say what would change
     odmdm-connector mdms                      # the MDMs installed: fleet built in, and any plugins
 
 ``name --all`` numbers in enrolment order from one above the highest ``OTTER<n>`` among the
@@ -542,6 +559,20 @@ anything is changed, with both addresses said.
 The API token is a global admin's, so whoever runs the connector for one Deploy App can change
 every team in that Fleet: share a Fleet only among people who trust each other with it.
 
+When a deployment ends
+~~~~~~~~~~~~~~~~~~~~~~
+
+Ending a Deploy App, **End and remove** on the page or ``end --yes``, deletes two things in Fleet:
+the team's certificate template, named as ``ODMDM_KEY_ALIAS`` says, and then the certificate
+authority that template was bound to. Fleet then has every phone in the team that holds that
+certificate remove it at its next check-in, within about 15 minutes. The team, its phones, their names, its
+policy, its apps and its launcher stay, and the next Deploy App can be connected to that team.
+Fleet keeps an authority while another team's certificate template still uses it: the connector
+then says the authority stays. A team whose template is bound to an authority that serves another
+address is left as it is, with both addresses said, and so is Fleet when it has no team of that
+name. When the team has no such template, as after an ending that stopped half-way, ending again
+deletes the authority that serves this Deploy App's address, never one that serves another.
+
 The template
 ~~~~~~~~~~~~
 
@@ -647,8 +678,8 @@ only:
   default may hold ``{deployment}``, which the connector fills in with the deployment's name, the
   first label of the Deploy App's host: ``{deployment} DeployApp`` is Fleet's team. Without a
   host there is no such default, so make that field ``required``.
-- ``missing`` holds, for each of ``setup``, ``set_challenge``, ``ask_again`` and ``send_policy``
-  the MDM cannot do, the sentence the operator reads instead; it is an empty mapping when the MDM
+- ``missing`` holds, for each of ``setup``, ``set_challenge``, ``ask_again``, ``send_policy`` and
+  ``end`` the MDM cannot do, the sentence the operator reads instead; it is an empty mapping when the MDM
   can do them all. The connector never calls what is listed there; called anyway, it raises
   ``MdmError`` with that sentence, ``send_policy`` being ``setup`` with ``force``.
 - ``__init__(values)`` takes the fields' values by key. It does not call the MDM: on a dry run a
@@ -663,6 +694,13 @@ only:
   takes callsigns by phone id, and ``ask_again(ids)`` phone ids, none meaning every named phone
   whose certificate failed or was not asked for. Both answer the lines to show, and raise
   ``MdmError`` for an id that is not in the group.
+- ``end(window)`` takes this Deploy App out of the MDM once its deployment is over: the group's
+  phones lose its certificate, and the group, its phones, their names and their apps stay, ready
+  for the group's next Deploy App. ``window`` names the Deploy App by its SCEP URL; its challenge
+  is not used. It answers the lines to show, what was taken out and what stays, and called again
+  it takes out what an earlier call left, saying so when nothing was left. A plugin made before
+  ``end`` was in the contract has no ``end`` and does not list it in ``missing``: the connector
+  says that plugin cannot end a Deploy App, and never calls it.
 - It raises only ``MdmError``. One that stops half-way through ``name`` says in ``named`` which
   phones it had already named, and in ``lines`` the lines already due to the operator, such as an
   old callsign to remove: the command line prints them before the error, the page lists them
@@ -674,8 +712,8 @@ only:
   command, option or button, and never hold the challenge or a secret.
 
 Name the package ``odmdm-connector-<name>``, depending on ``odmdm-connector>=1.4,<2``, the first
-release that has everything named above, with the class under the entry point group
-``odmdm_connector.mdm``::
+release that has everything named above but ``end``, which came in 1.7 (a connector before it
+never calls it), with the class under the entry point group ``odmdm_connector.mdm``::
 
     [project.entry-points."odmdm_connector.mdm"]
     <name> = "odmdm_connector_<name>:<Name>Mdm"

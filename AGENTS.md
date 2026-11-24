@@ -129,11 +129,13 @@ giving callsigns, one phone, the settings and removing a Deploy App. Keep these 
   connector stops. Nothing else may ever be kept there: no other storage, no cookie. Every sentence it
   shows comes from an answer; `app.js` adds labels, headings, the lines of the Add card that say
   where Deploy App's button is, that it opens a new tab and what to have at hand, the Remove
-  dialog's line on what removing changes, and the sentences for a connector that refuses this
-  browser or does not answer. A tab waits for Deploy App only when Deploy App's button opened it,
+  dialog's lines on what removing changes and on what ending the Deploy App in its MDM changes
+  (never how soon: only the MDM's plugin knows that), and the sentences for a connector that
+  refuses this browser or does not answer. A tab waits for Deploy App only when Deploy App's button opened it,
   and a card that holds nothing typed follows a Deploy App added, opened or connected in another
   tab. Focus starts in the first field, else on the main button; in the Remove dialog and on the
-  confirm card for a new Deploy App, on Cancel. The picture of Deploy App's button on the Add card
+  confirm card for a new Deploy App, on Cancel. Enter on the Remove dialog's box does nothing: only
+  its button ends a Deploy App. The picture of Deploy App's button on the Add card
   is no control: a `span`, hidden from assistive technology. Each card and each dialog is a form whose
   main button submits it; a button that cannot act is disabled, not hidden.
 - Deploy App's MDM page is the address `App.mdm_page` hands in the state, opened in a new tab with
@@ -176,6 +178,14 @@ A certificate authority is the exception: it is known by the address it serves, 
 `RMSCEP` or typed by hand keeps working. Never look one up by a fixed name, and never repoint one:
 its teams' phones would enrol into another Deploy App. Fleet keeps an authority while a certificate
 template is bound to it (a foreign key without ON DELETE in Fleet 4.90.1's schema).
+
+Ending a Deploy App makes the only two deletions there are, `FleetMdm.delete_certificate` and
+`delete_authority`, measured on a live Fleet 4.90.1: deleting a team's certificate template is
+answered 2xx, and Fleet's console says of it that it removes the certificate from all hosts of the
+team; deleting an authority is answered 2xx once no template is bound to it, and 409 with
+"Certificate templates still reference it" while one of any team is. An authority is deleted only
+after its address is compared with this Deploy App's, and a team whose template is bound to an
+authority of another address is left alone: never loosen either.
 
 ## Commands
 
